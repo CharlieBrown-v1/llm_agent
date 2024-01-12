@@ -1,0 +1,477 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>🪄 Lumos: Language Agents with Unified Data Formats, Modular Design, and Open-Source LLMs</title>
+
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=G-PYVRSFMDRL"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+
+    function gtag() {
+      dataLayer.push(arguments);
+    }
+
+    gtag('js', new Date());
+
+    gtag('config', 'G-PYVRSFMDRL');
+  </script>
+
+  <link href="https://fonts.googleapis.com/css?family=Google+Sans|Noto+Sans|Castoro"
+        rel="stylesheet">
+
+  <link rel="stylesheet" href="./static/css/bulma.min.css">
+  <link rel="stylesheet" href="./static/css/bulma-carousel.min.css">
+  <link rel="stylesheet" href="./static/css/bulma-slider.min.css">
+  <link rel="stylesheet" href="./static/css/fontawesome.all.min.css">
+  <link rel="stylesheet"
+        href="https://cdn.jsdelivr.net/gh/jpswalsh/academicons@1/css/academicons.min.css">
+  <link rel="stylesheet" href="./static/css/index.css">
+  <link rel="icon" href="./static/images/dynosaur.png">
+
+  <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.5.1/jquery.min.js"></script>
+  <script defer src="./static/js/fontawesome.all.min.js"></script>
+  <script src="./static/js/bulma-carousel.min.js"></script>
+  <script src="./static/js/bulma-slider.min.js"></script>
+  <script src="./static/js/index.js"></script>
+</head>
+<body>
+
+<nav class="navbar" role="navigation" aria-label="main navigation">
+  <div class="navbar-brand">
+    <a role="button" class="navbar-burger" aria-label="menu" aria-expanded="false">
+      <span aria-hidden="true"></span>
+      <span aria-hidden="true"></span>
+      <span aria-hidden="true"></span>
+    </a>
+  </div>
+  
+<!--   <div class="navbar-menu">
+    <div class="navbar-start" style="flex-grow: 1; justify-content: center;">
+      <a class="navbar-item" href="https://keunhong.com">
+      <span class="icon">
+          <i class="fas fa-home"></i>
+      </span>
+      </a>
+
+      <div class="navbar-item has-dropdown is-hoverable">
+        <a class="navbar-link">
+          More Research
+        </a>
+        <div class="navbar-dropdown">
+          <a class="navbar-item" href="https://hypernerf.github.io">
+            HyperNeRF
+          </a>
+          <a class="navbar-item" href="https://nerfies.github.io">
+            Nerfies
+          </a>
+          <a class="navbar-item" href="https://latentfusion.github.io">
+            LatentFusion
+          </a>
+          <a class="navbar-item" href="https://photoshape.github.io">
+            PhotoShape
+          </a>
+        </div>
+      </div>
+      
+    </div>
+
+  </div> -->
+  
+</nav>
+
+
+<section class="hero">
+  <div class="hero-body">
+    <div class="container is-max-desktop">
+      <div class="columns is-centered">
+        <div class="column has-text-centered">
+          <h1 class="title is-2 publication-title">🪄 Lumos: Learning Agents with Unified Data, Modular Design, and Open-Source LLMs</h1>
+          <div class="is-size-5 publication-authors">
+            <span class="author-block">
+              <a href="https://wadeyin9712.github.io/">Da Yin</a><sup>2</sup>,</span>
+            <span class="author-block">
+              <a href="https://fabrahman.github.io/">Faeze Brahman</a><sup>1</sup>,</span>
+            <span class="author-block">
+              <a href="https://www.cs.cmu.edu/~aravicha/">Abhilasha Ravichander</a><sup>1</sup>,
+            </span>
+            <span class="author-block">
+              <a href="https://www.cs.cmu.edu/~kchandu/">Khyathi Chandu</a><sup>1</sup>,
+            </span>
+            <br>
+            <span class="author-block">
+              <a href="http://web.cs.ucla.edu/~kwchang/">Kai-Wei Chang</a><sup>2</sup>,
+            </span>
+            <span class="author-block">
+              <a href="https://homes.cs.washington.edu/~yejin/">Yejin Choi</a><sup>1, 3</sup>,
+            </span>
+            <span class="author-block">
+              <a href="https://yuchenlin.xyz/">Bill Yuchen Lin</a><sup>1</sup>
+            </span>
+          </div>
+
+          <div class="is-size-5 publication-authors">
+            <span class="author-block"><sup>1</sup>Allen Institute for AI</span> &nbsp;&nbsp;
+            <span class="author-block"><sup>2</sup>University of California, Los Angeles </span> &nbsp;&nbsp;
+            <span class="author-block"><sup>3</sup>University of Washington</span> &nbsp;&nbsp;
+
+          </div>
+
+          <div class="column has-text-centered">
+            <div class="publication-links">
+              <!-- PDF Link. -->
+              <span class="link-block">
+                <a href=""
+                   class="external-link button is-normal is-rounded is-dark">
+                  <span class="icon">
+                      <i class="fas fa-file-pdf"></i>
+                  </span>
+                  <span>Paper</span>
+                </a>
+              </span>
+              <!-- Model Link. -->
+              <span class="link-block">
+                <a href="https://huggingface.co/models?sort=trending&search=ai2lumos"
+                   class="external-link button is-normal is-rounded is-dark">
+                  <span class="icon">
+                      <i class="ai ai-arxiv"></i>
+                  </span>
+                  <span>Model</span>
+                </a>
+              </span>
+              <!-- Video Link. -->
+<!--               <span class="link-block">
+                <a href="https://www.youtube.com/watch?v=MrKrnHhk8IA"
+                   class="external-link button is-normal is-rounded is-dark">
+                  <span class="icon">
+                      <i class="fab fa-youtube"></i>
+                  </span>
+                  <span>Video</span>
+                </a>
+              </span> -->
+              <!-- Code Link. -->
+              <span class="link-block">
+                <a href="https://github.com/allenai/lumos"
+                   class="external-link button is-normal is-rounded is-dark">
+                  <span class="icon">
+                      <i class="fab fa-github"></i>
+                  </span>
+                  <span>Code</span>
+                  </a>
+              </span>
+              <!-- Dataset Link. -->
+              <span class="link-block">
+                <a href="https://huggingface.co/datasets?sort=trending&search=ai2lumos"
+                   class="external-link button is-normal is-rounded is-dark">
+                  <span class="icon">
+                      <i class="far fa-images"></i>
+                  </span>
+                  <span>Data</span>
+                  </a>
+              </span>
+              <span class="link-block">
+                <a href="https://twitter.com/billyuchenlin/status/1724519911614300390?s=61&t=FyWExVfnr8YanWV5YzaPjg"
+                   class="external-link button is-normal is-rounded is-dark">
+                  <span class="icon">
+                      <i class="fab fa-twitter"></i>
+                  </span>
+                  <span>Twitter</span></a>
+                  </a>
+              </span>
+            </div>
+
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="container is-max-desktop">
+    <div class="columns is-centered has-text-centered">
+        <div class="content has-text-justified">
+          We introduce 🪄 <strong>Lumos</strong>, Language Agents with Unified Data Formats, Modular Design, and Open-Source LLMs. <strong>Lumos</strong> unifies a suite of complex interactive tasks and achieves competitive performance with GPT-4/3.5-based and larger open-source agents. 
+          <br><br><strong>Lumos</strong> has following features: 
+          <ul>
+            <li><strong>🧩 A General Agent Modular Framework</strong>
+              <ul>
+              <li>🧩 <strong>Lumos</strong> consists of planning, grounding, and execution modules built based on LLAMA-2-7B and off-the-shelf APIs.</li> 
+              <li>🤗 <strong>Lumos</strong> utilizes a unified data format that encompasses multiple task types, thereby enabling the developed agent framework to conveniently support a range of interactive tasks.</li>
+              </ul>
+            </li> 
+            <li><strong>🌍 Diverse Training Data</strong>
+              <ul>
+              <li>🌍 <strong>Lumos</strong> is trained with ~40K diverse high-quality subgoal/action annotations from ground-truth reasoning steps in existing benchmarks with GPT-4.</li> 
+              <li>⚒️ <strong>Lumos</strong> data can be instrumental for future research in developing open-source agents for complex interactive tasks.</li>
+              </ul>
+            </li>
+            <li><strong>🚀 Competitive Performance</strong>
+              <ul>
+              <li>🚀 <strong>Lumos</strong> is comparable or even beats GPT-series agents on web/complex QA tasks Mind2Web and HotpotQA, and larger open agents on math tasks.</li>
+              <li>🚀 <strong>Lumos</strong> exceeds contemporaneous agents that have been fine-tuned with in-domain HotpotQA and Mind2Web annotations, such as FiReAct and AgentLM.</li>
+              <li>🚀 <strong>Lumos</strong> outperforms open agent baseline formulations like chain-of-thoughts and integrated training.</li>
+              <li>🚀 <strong>Lumos</strong> surpasses larger open LLM agents and domain-specific agents by a large margin on an unseen task, WebShop.</li>
+              </ul>
+            </li>
+          </ul>
+         </div>
+    </div>
+    <!--/ Abstract. -->
+
+    <!-- Paper video. -->
+<!--     <div class="columns is-centered has-text-centered">
+      <div class="column is-four-fifths">
+        <h2 class="title is-3">Video</h2>
+        <div class="publication-video">
+          <iframe src="https://www.youtube.com/embed/MrKrnHhk8IA?rel=0&amp;showinfo=0"
+                  frameborder="0" allow="autoplay; encrypted-media" allowfullscreen></iframe>
+        </div>
+      </div>
+    </div> -->
+    <!--/ Paper video. -->
+  </div>
+</section>
+
+
+<section class="section" id="BibTeX">
+  <div class="container is-max-desktop content is-size-5">
+    <h2 class="title">BibTeX</h2>
+    <pre><code>
+    @article{yin2023lumos,
+      title={{Lumos: Learning Agents with Unified Data, Modular Design, and Open-Source LLMs}},
+      author={Yin, Da and Brahman, Faeze and Ravichander, Abhilasha and Chandu, Khyathi and Chang, Kai-Wei and Choi, Yejin and Lin, Bill Yuchen},
+      journal={arXiv preprint arXiv:2311.05657},
+      year={2023}
+    }
+    </code></pre>
+  </div>
+</section>
+
+  
+<section class="section">
+  <div class="container is-max-desktop">
+    <!-- Results. -->
+    <div class="columns is-centered">
+      <div class="column has-text-centered">
+        <h2 class="title is-3">🪄 Lumos Architecture</h2>
+        <p align="center">
+        <img src="static/images/lumos_architecture.png" width="600" align="middle" class="center"/>
+        </p>
+        <div class="content has-text-justified">
+          <strong>Lumos</strong> consists of following modules: 
+          <ul>
+            <li><strong>Planning Module:</strong>
+              <ul>
+                <li>Decompose a complex task into a series of high-level subgoals, which are written in natural language.</li>
+              </ul>
+            <li><strong>Grounding Module:</strong>
+              <ul>
+                <li>Convert the high-level subgoals produced by the planning module to low-level executable actions.</li>
+              </ul>
+            <li><strong>Execution Module:</strong>
+              <ul>
+                <li>Parse actions to a series of external tools including APIs, small neural models, and virtual simulators that interact with relevant tools and external environment.</li>
+              </ul>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+  
+<section class="section">
+  <div class="container is-max-desktop">
+    <!-- Results. -->
+    <div class="columns is-centered">
+      <div class="column has-text-centered">
+        <h2 class="title is-3">🪄 Lumos Formulation</h2>
+        <p align="center">
+        <img src="static/images/lumos_formulation.png" class="center">
+        </p>
+        <div class="content has-text-justified">
+          We attempt the following two <strong>Lumos</strong> formulations: 
+          <ul>
+            <li><strong>Lumos-Iterative (Lumos-I):</strong>
+              <ul>
+              <li>Generates one subgoal and its corresponding executable actions in each iteration according to the external environment and prior memory.</li> 
+              <li>When generating the current t-th subgoal, the planning module requires the previous planned subgoals and the execution results of their grounded actions.</li>
+              </ul>
+            <li><strong>Lumos-Onetime (Lumos-O):</strong>
+              <ul>
+              <li>An efficient formulation that generates all the subgoals and grounded actions at once.</li>
+              </ul>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="container is-max-desktop">
+    <!-- Results. -->
+    <div class="columns is-centered">
+      <div class="column has-text-centered">
+        <h2 class="title is-3">🪄 Lumos Training Annotations</h2>
+        <p align="center">
+        <img src="static/images/lumos_annotation_example.png" class="center">
+        </p>
+        <div class="content has-text-justified">
+          <p>
+          Instead of using Self-Instruct method, we use LLMs to convert ground-truth intermediate reasoning steps into the expected high-quality annotations aligning with our proposed formulations. 
+          </p>
+          <p>
+          Finally, we are able to generate ~40K annotations to train Lumos planning and grounding modules (one of the largest resources for language agent fine-tuning). The annotation sources cover web, complex QA and math task types. See our final annotation data in <a href="https://huggingface.co/datasets?search=ai2lumos">Huggingface Dataset</a> and prompt details in <a href="https://github.com/allenai/lumos/tree/main/data">Github</a>.
+          </p>       
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="container is-max-desktop">
+    <!-- Results. -->
+    <div class="columns is-centered">
+      <div class="column has-text-centered">
+        <h2 class="title is-3">Results</h2>
+        <div class="content has-text-justified">
+        <p align="center">
+        <img src="static/images/lumos_results_1.png" width="80%" class="center">
+        </p>
+        <br>
+          <p>
+            We first evaluate <strong>Lumos</strong> on complex QA, web and maths tasks. 
+          </p>
+          <p>
+            We find that <strong>Lumos</strong> outperforms GPT-4/3.5-based agents on complex QA and web tasks.
+            In particular, <strong>Lumos</strong> outperforms GPT-4 5.1 step success rate on Mind2Web and GPT-3.5-turbo-based ReAct 5.1 LLM accuracy. <strong>Lumos</strong> also achieves better performance than 2-4x bigger language agents on maths tasks.
+          </p>
+        </div>
+      </div>
+    </div>
+  </div>
+    <!--/ Results. -->
+
+</section>
+
+
+<section class="section">
+  <div class="container is-max-desktop">
+    <!-- Results. -->
+    <div class="columns is-centered">
+      <div class="column has-text-centered">
+        <h2 class="title is-3">Comparison with Baseline Formulations</h2>
+        <div class="content has-text-justified">
+          <p align="center">
+          <img src="static/images/lumos_results_2.png" class="center">
+          </p>
+          <p>
+            We compare <strong>Lumos</strong> formulation with other baseline formulations to train open-source agents. The baseline formulations are Chain-of-Thought Training 
+            and Integrated Agent Training. 
+          </p>
+          <p>
+            <strong>Lumos</strong> performs the best among the baselines on three different complex interative tasks.
+          </p>
+        </div>
+      </div>
+    </div>
+  </div>
+    <!--/ Results. -->
+
+</section>
+
+
+<section class="section">
+  <div class="container is-max-desktop">
+    <!-- Results. -->
+    <div class="columns is-centered">
+      <div class="column has-text-centered">
+        <h2 class="title is-3">Generalizability of Lumos</h2>
+        <div class="content has-text-justified">
+          <p align="center">
+          <img src="static/images/lumos_results_3.png" width="250" class="center">
+          </p>
+          <p>
+            We first evaluate <strong>Lumos</strong> trained with the unified annotations composed by task-specific ones. We then test <strong>Lumos</strong> on an unseen complex interactive task, WebShop.
+          </p>
+          <p>
+            We find that after the unified training, <strong>Lumos</strong> would have slightly higher
+            performance on web and complex QA tasks. We also observe that <strong>Lumos</strong> can bring an improvement over domain-specific agents 5-10 reward improvement, and also better performance than larger agents with 13B and 30B sizes.
+          </p>
+        </div>
+      </div>
+    </div>
+  </div>
+    <!--/ Results. -->
+
+</section>
+
+
+<section class="section">
+  <div class="container is-max-desktop">
+    <!-- Results. -->
+    <div class="columns is-centered">
+      <div class="column has-text-centered">
+        <h2 class="title is-3">Further Analysis on Annotations</h2>
+        <div class="content has-text-justified">
+          <p align="center">
+          <img src="static/images/lumos_results_4.png" width="400" class="center">
+          </p>
+          <p>
+            We also conduct deeper analysis about annotation quality and the choice of annotation formats. We answer the following questions: 
+            <ul>
+            <li><strong>Q1: How good is our converted training annotations?</strong></li>
+            <li><strong>Q2: Would it be better if we adopt low-level subgoals instead of our proposed high-level subgoals?</strong></li>
+            </ul>
+          </p>
+          <p>
+            We find that by controling the training annotation size to be the same, our annotations can still help get better performance than the ones produced by Self-Instruct method and passed by rigorous 
+            execution sanity checking. Also, we find that making planning module generate high-level subgoals would be a superior choice to generating a very long sequence of low-level subgoals.
+          </p>
+        </div>
+      </div>
+    </div>
+  </div>
+    <!--/ Results. -->
+
+</section>
+
+
+<footer class="footer">
+  <div class="container">
+    <div class="content has-text-centered">
+      <a class="icon-link"
+         href="">
+        <i class="fas fa-file-pdf"></i>
+      </a>
+      <a class="icon-link" href="https://github.com/allenai/lumos" class="external-link" disabled>
+        <i class="fab fa-github"></i>
+      </a>
+    </div>
+    <div class="columns is-centered">
+      <div class="column is-8">
+        <div class="content">
+          <p>
+            This website is licensed under a <a rel="license"
+                                                href="http://creativecommons.org/licenses/by-sa/4.0/">Creative
+            Commons Attribution-ShareAlike 4.0 International License</a>.
+          </p>
+          <p>
+            This means you are free to borrow the <a
+              href="https://github.com/nerfies/nerfies.github.io">source code</a> of this website,
+            we just ask that you link back to this page in the footer.
+            Please remember to remove the analytics code included in the header of the website which
+            you do not want on your website.
+          </p>
+        </div>
+      </div>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>
