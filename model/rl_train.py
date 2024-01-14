@@ -1,4 +1,3 @@
-"""From https://github.com/allenai/open-instruct/blob/main/open_instruct/finetune.py."""
 import os
 try:
     api_key = os.environ["WOLFRAM_API_KEY"]
@@ -42,7 +41,7 @@ import numpy as np
 from pathlib import Path
 from dataclasses import dataclass
 from model.rl_models import CQLModelForCausalLM
-from eval.utils import rl_generate_completions
+from eval.utils import rl_generate_completions, generate_completions
 
 from eval.gsm.run_eval import execute as gsm_execute
 from eval.gsm.run_eval import rl_execute as gsm_rl_execute
@@ -53,6 +52,10 @@ from pytorch_memlab.mem_reporter import Optional, LEN, readable_size
 
 logger = get_logger(__name__)
 lumos_dir = Path(__file__).parent.parent
+model_name_list = [
+    'gpt2',
+    'lumos',
+]
 
 
 @dataclass
@@ -367,7 +370,7 @@ def parse_args():
     parser.add_argument("--warmup_ratio", type=float, default=0.03, help="Ratio of total training steps used for warmup.")
     parser.add_argument("--weight_decay", type=float, default=0.0, help="Weight decay to use.")
     parser.add_argument("--num_train_epochs", type=int, default=2, help="Total number of training epochs to perform.")
-    parser.add_argument("--output_dir", type=str, default=str(lumos_dir.joinpath('results/train/lumos_unified_rl_iterative')), help="Where to store the final model.")
+    parser.add_argument("--output_dir", type=str, default=str(lumos_dir.joinpath('results/lumos_unified_rl_iterative')), help="Where to store the final model.")
     parser.add_argument("--with_tracking", action="store_true", default=False, help="Whether to enable experiment trackers for logging.")
     parser.add_argument("--report_to", type=str, default="tensorboard")
     parser.add_argument("--logging_steps", type=int, default=1, help="Log the training loss and learning rate every logging_steps steps.")
@@ -489,136 +492,7 @@ def save_with_accelerate(accelerator, model, tokenizer, output_dir, args):
         )
 
 
-def wrap_dataset(dataset: datasets.Dataset, task_ids: list, tokenizer: AutoTokenizer, max_seq_length: int) -> dict:
-    task_types = ['complex_qa', 'maths', 'web_agent']
-    task2state_ids_len_list = dict(zip(task_types, [[] for _ in range(len(task_types))]))
-
-    total_state_ids_list = []
-    total_action_ids_list = []
-    total_next_state_ids_list = []
-    total_rewards_list = []
-    total_dones_list = []
-    total_valid_flags_list = []
-    total_data_indexes_list = []
-    wrap_tqdm = tqdm(range(len(dataset)))
-    # wrap_tqdm = tqdm(range(10))
-    # wrap_tqdm = tqdm(range(1))
-    wrap_tqdm.set_description("Wrapping dataset to RL format")
-    for data_idx in wrap_tqdm:
-        data_tau = dataset[data_idx]
-        # Current setting do not need labels
-        tau_str = tokenizer.decode(data_tau['input_ids'])
-        tau_attention_mask = data_tau['attention_mask']
-        action_prompt = '<|assistant|>\n'
-        tau_state_str_list = []
-        tau_action_str_list = []
-        tau_user_prompt_list = []
-        tmp_list = tau_str.split(action_prompt)
-        state_str = tmp_list[0] + action_prompt
-        for block_idx in range(1, len(tmp_list)):
-            action_str, next_state_user_prompt = tmp_list[block_idx].split(tokenizer.eos_token)
-            action_str = action_str + tokenizer.eos_token  # eos_token is outputed by LLM
-            # Final step
-            if block_idx == len(tmp_list) - 1:
-                user_prompt = next_state_user_prompt
-            else:
-                user_prompt = next_state_user_prompt + action_prompt
-            next_state_str = state_str + action_str + user_prompt
-            tau_state_str_list.append(state_str)
-            tau_action_str_list.append(action_str)
-            tau_user_prompt_list.append(user_prompt)
-
-            state_str = next_state_str
-        
-        tau_state_ids_list = []
-        tau_action_id_list = []
-        tau_next_state_ids_list = []
-        tau_valid_flags_list = []
-        for str_idx in range(len(tau_state_str_list)):
-            if isinstance(tokenizer, LlamaTokenizer) or isinstance(tokenizer, LlamaTokenizerFast):
-                # Remove the first bos_token
-                macro_step_state_ids = tokenizer(tau_state_str_list[str_idx], max_length=max_seq_length, truncation=True).input_ids[1:]
-                maco_step_user_prompt_ids = tokenizer(tau_user_prompt_list[str_idx], max_length=max_seq_length, truncation=True).input_ids[1:]
-                macro_step_action_ids = tokenizer(tau_action_str_list[str_idx], max_length=max_seq_length, truncation=True).input_ids[1:]
-            elif isinstance(tokenizer, GPT2Tokenizer):
-                macro_step_state_ids = tokenizer(tau_state_str_list[str_idx], max_length=max_seq_length, truncation=True).input_ids
-                maco_step_user_prompt_ids = tokenizer(tau_user_prompt_list[str_idx], max_length=max_seq_length, truncation=True).input_ids
-                macro_step_action_ids = tokenizer(tau_action_str_list[str_idx], max_length=max_seq_length, truncation=True).input_ids
-            else:
-                raise NotImplementedError
-            if str_idx > 0:
-                tmp_macro_step_state_ids = tau_next_state_ids_list[-1]
-            else:
-                tmp_macro_step_state_ids = macro_step_state_ids
-            for action_id_idx in range(len(macro_step_action_ids)):
-                action_id = macro_step_action_ids[action_id_idx]
-                tau_state_ids_list.append(tmp_macro_step_state_ids)
-                tmp_macro_step_state_ids = tmp_macro_step_state_ids + [action_id]
-                tau_action_id_list.append(action_id)
-                if action_id_idx < len(macro_step_action_ids) - 1:
-                    tmp_macro_step_next_state_ids = tmp_macro_step_state_ids
-                    tau_valid_flags_list.append(0)
-                else:
-                    tmp_macro_step_next_state_ids = tmp_macro_step_state_ids + maco_step_user_prompt_ids
-                    tau_valid_flags_list.append(1)
-                tau_next_state_ids_list.append(tmp_macro_step_next_state_ids)
-        
-        tmp_task_type = '_'.join(task_ids[data_idx].split('_')[:-1])
-        tau_ids_len = len(tau_state_ids_list[-1])
-        if tmp_task_type == 'complex_qa':
-            task2state_ids_len_list['complex_qa'].append(tau_ids_len)
-        elif tmp_task_type == 'maths':
-            task2state_ids_len_list['maths'].append(tau_ids_len)
-        elif tmp_task_type == 'web_agent':
-            task2state_ids_len_list['web_agent'].append(tau_ids_len)
-        else:
-            raise ValueError('Unknown task type.')
-
-        total_state_ids_list.extend(tau_state_ids_list)
-        total_action_ids_list.extend(tau_action_id_list)
-        total_next_state_ids_list.extend(tau_next_state_ids_list)
-        total_rewards_list.extend([0] * (len(tau_state_ids_list) - 1) + [1])
-        total_dones_list.extend([0] * (len(tau_state_ids_list) - 1) + [1])
-        total_valid_flags_list.extend(tau_valid_flags_list)
-        total_data_indexes_list.extend([data_idx] * len(tau_state_ids_list))
-
-    data_dict = {
-        'input_ids': total_state_ids_list,  # Needed by DataCollator
-
-        'states': total_state_ids_list,
-        'actions': total_action_ids_list,
-        'next_states': total_next_state_ids_list,
-        'rewards': total_rewards_list,
-        'dones': total_dones_list,
-        'valid_flags': total_valid_flags_list,
-        'data_indexes': total_data_indexes_list,
-    }
-
-    import matplotlib.pyplot as plt
-    binwidth = 100
-    for task_type in task_types:
-        x = np.array(task2state_ids_len_list[task_type])
-        n, bins, patches = plt.hist(x, bins=range(0, int(x.max()) + binwidth, binwidth), edgecolor='black', density=True)
-        for i in range(len(bins) - 1):
-            bin_center = (bins[i] + bins[i + 1]) / 2
-            plt.annotate(f'{binwidth * n[i]:.3f}', xy=(bin_center, n[i]), xytext=(0, 5),
-                        textcoords='offset points', ha='center', va='bottom')
-        plt.title(f'Task distribution of {task_type}')
-        plt.savefig(f'{task_type}_histogram.png')
-        plt.clf()
-
-    wrapped_dataset = datasets.Dataset.from_dict(data_dict)
-    token_space = torch.unique(torch.as_tensor(total_action_ids_list))
-
-    wrap_result = {
-        'wrapped_dataset': wrapped_dataset,
-        'token_space': token_space,
-    }
-
-    return wrap_result
-
-
-def wrap_dataset_vf(dataset: datasets.Dataset, task_name: str, task_ids: list, tokenizer: AutoTokenizer, max_seq_length: int) -> dict:
+def wrap_dataset_vf(args: argparse.Namespace, dataset: datasets.Dataset, task_name: str, task_ids: list, tokenizer: AutoTokenizer, max_seq_length: int) -> dict:
     max_tau_length = 900  # Skip taus which are too long
 
     total_task_id_list = []
@@ -630,11 +504,11 @@ def wrap_dataset_vf(dataset: datasets.Dataset, task_name: str, task_ids: list, t
     total_dones_list = []
     total_valid_flags_list = []
     wrap_tqdm = tqdm(range(len(dataset)))
-    debug_start_idx = 0
-    # debug_start_idx = len(dataset) - 1
+
     debug_start_idx = 20000
-    # wrap_tqdm = tqdm(range(debug_start_idx, debug_start_idx + 1))
-    # wrap_tqdm = tqdm(range(debug_start_idx, debug_start_idx + 10))
+    if args.debug or 'gpt2' in args.model_name_or_path:
+        wrap_tqdm = tqdm(range(debug_start_idx, debug_start_idx + 10))
+
     wrap_tqdm.set_description("Wrapping dataset to RL format")
     for data_idx in wrap_tqdm:
         task_id = task_ids[data_idx]
@@ -905,11 +779,13 @@ def update_invalid_flags(batch_dict: dict, task_ids: list, model: CQLModelForCau
         else:
             raise NotImplementedError
         pi_valid_flags.append(step_result['valid_flag'])
-
+    
     batch_dict['invalid_flags'] = 1 - torch.as_tensor(pi_valid_flags).to(batch_dict['valid_flags'].device)
 
+    # actions = '\n'
+    # batch_dict['invalid_flags'] = 1 - batch_dict['valid_flags']
+
     if isinstance(tokenizer, LlamaTokenizer) or isinstance(tokenizer, LlamaTokenizerFast):
-        # Remove the first bos_token
         pi_actions = torch.as_tensor(tokenizer(actions.strip() + tokenizer.eos_token)['input_ids']).to(batch_dict['states_agent'].device)[1:].unsqueeze(dim=0)
     elif isinstance(tokenizer, GPT2Tokenizer):
         pi_actions = torch.as_tensor(tokenizer(actions.strip() + tokenizer.eos_token)['input_ids']).to(batch_dict['states_agent'].device).unsqueeze(dim=0)
@@ -955,8 +831,10 @@ def main():
         args.model_name_or_path = '/home/ubuntu/yangsihang/llm_ref/.cache/models--gpt2/snapshots/11c5a3d5811f50298f278a704980280950aedb10'
         if 'gpt2' in args.model_name_or_path:
             args.use_flash_attn = False  # GPT2 not support it!
+        args.output_dir = str(Path(args.output_dir).joinpath('debug'))
     # Train config
     else:
+        args.output_dir = str(Path(args.output_dir).joinpath('train'))
         args.use_flash_attn = True
         args.use_slow_tokenizer = True
         args.with_tracking = True
@@ -970,7 +848,17 @@ def main():
         accelerator_log_kwargs["log_with"] = args.report_to
         # accelerator_log_kwargs["logdir"] = args.output_dir.joinpath('logs')
         accelerator_log_kwargs["project_dir"] = args.output_dir
-    accelerator = Accelerator(gradient_accumulation_steps=args.gradient_accumulation_steps, cpu=args.cpu, **accelerator_log_kwargs)
+
+    # accelerator = Accelerator(gradient_accumulation_steps=args.gradient_accumulation_steps, cpu=args.cpu, **accelerator_log_kwargs)
+    from accelerate.utils import InitProcessGroupKwargs
+    from datetime import timedelta
+    accelerate_kwargs_handlers = [InitProcessGroupKwargs(timeout=timedelta(seconds=1800))]
+    accelerator = Accelerator(gradient_accumulation_steps=args.gradient_accumulation_steps, cpu=args.cpu, kwargs_handlers=accelerate_kwargs_handlers, **accelerator_log_kwargs)
+
+    print(f'=' * 64)
+    print(f'Accelerator timeout: {accelerator.init_handler.timeout}')
+    print(f'=' * 64)
+
     # Make one log on every process with the configuration for debugging.
     logging.basicConfig(
         format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
@@ -1168,13 +1056,13 @@ def main():
 
     train_dataset = lm_datasets["train"]
     task_ids = raw_datasets['train']['id']
-    wrap_result = wrap_dataset_vf(dataset=train_dataset, task_name=args.task_name, task_ids=task_ids, tokenizer=tokenizer, max_seq_length=args.max_seq_length)
+    wrap_result = wrap_dataset_vf(args=args, dataset=train_dataset, task_name=args.task_name, task_ids=task_ids, tokenizer=tokenizer, max_seq_length=args.max_seq_length)
     rl_train_dataset = wrap_result['wrapped_dataset']
     token_space = wrap_result['token_space']
 
     # Log a few random samples from the training set:
-    for index in random.sample(range(len(rl_train_dataset)), 3):
-        logger.info(f"Sample {index} of the training set: {rl_train_dataset[index]}.")
+    # for index in random.sample(range(len(rl_train_dataset)), 3):
+        # logger.info(f"Sample {index} of the training set: {rl_train_dataset[index]}.")
 
     # Wrap LM to RL-style
     q_head_kwargs = {
@@ -1291,7 +1179,7 @@ def main():
         experiment_config = vars(args)
         # TensorBoard cannot log Enums, need the raw value
         experiment_config["lr_scheduler_type"] = experiment_config["lr_scheduler_type"].value
-        accelerator.init_trackers("open_instruct", experiment_config)
+        accelerator.init_trackers("llm_agent", experiment_config)
 
     # Train!
     total_batch_size = args.per_device_train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
@@ -1353,6 +1241,13 @@ def main():
 
     model.train()
     accumulated_steps = 0
+
+    model_name = None
+    for tmp_model_name in model_name_list:
+        if tmp_model_name in args.model_name_or_path:
+            model_name = tmp_model_name
+    assert model_name is not None
+
     for epoch in range(starting_epoch, args.num_train_epochs):
         total_loss = 0
         if (
@@ -1375,22 +1270,21 @@ def main():
         for step, batch_dict in enumerate(active_dataloader):
             accumulated_steps += 1
             assert batch_dict['valid_flags'].shape[0] == 1
-            if batch_dict['valid_flags'][0] == 1:
-                batch_dict = update_invalid_flags(batch_dict=batch_dict, task_ids=task_ids, model=accelerator.unwrap_model(model), tokenizer=tokenizer)
-                compute_vf = True
-            else:
-                # Align the keys of 2 conditions
+            with accelerator.accumulate(model):
+                compute_vf = batch_dict['valid_flags'][0] == 1
                 batch_dict['pi_actions'] = batch_dict['states_agent'].clone()
                 batch_dict['invalid_flags'] = (1 - batch_dict['valid_flags']).to(batch_dict['valid_flags'].device)
-                compute_vf = False
+                    
+                # Prepare everything with `accelerator`.
+                batch_dict = accelerator.prepare(batch_dict)
+                is_vf_called_list.append(compute_vf)
 
-            # Prepare everything with `accelerator`.
-            batch_dict = accelerator.prepare(batch_dict)
-
-            is_vf_called_list.append(compute_vf)
-            with accelerator.accumulate(model):
                 reporter = CustomMemReporter(model)
-                rl_forward_result = accelerator.unwrap_model(model).rl_forward(batch_dict=batch_dict, compute_vf=compute_vf)
+                rl_forward_result = accelerator.unwrap_model(model).rl_forward(batch_dict=batch_dict,
+                                                                               compute_vf=compute_vf,
+                                                                               task_ids=task_ids,
+                                                                               gsm_step=gsm_step,
+                                                                               )
                 loss = rl_forward_result['loss']
                 log_info_queue.put(rl_forward_result['log_info'])
                 # We keep track of the loss at each logged step
@@ -1430,7 +1324,7 @@ def main():
                 completed_steps += 1
 
                 # Only record when sync_gradients
-                output_filename = cuda_usage_dir.joinpath(f"Desc=CudaUsaget&Epoch={epoch}&Step={step}.txt")
+                output_filename = cuda_usage_dir.joinpath(f"Desc={model_name.upper()}&Epoch={epoch}&Step={step}.txt")
                 redirect_output_to_file(reporter.report, output_filename)
 
                 if args.logging_steps and completed_steps % args.logging_steps == 0:
@@ -1451,33 +1345,18 @@ def main():
                             'loss/ivf_loss': np.mean([log_info['ivf_loss'] for log_info in log_info_queue.queue]),
                         }
                         T_loss_info = {
-                            'T_loss/T': np.mean([log_info['T_loss_info']['T'] for log_info in log_info_queue.queue]),
-                            'T_loss/loss': np.mean([log_info['T_loss_info']['loss'] for log_info in log_info_queue.queue]),
+                            f'T_loss/{key}': np.mean([log_info['T_loss_info'][key] for log_info in log_info_queue.queue]) for key in log_info_queue.queue[0]['T_loss_info'].keys()
                         }
                         actor_loss_info = {
-                            'actor_loss/loss': np.mean([log_info['actor_loss_info']['loss'] for log_info in log_info_queue.queue]),
-                            'actor_loss/T': np.mean([log_info['actor_loss_info']['T'] for log_info in log_info_queue.queue]),
-                            'actor_loss/policy_Q': np.mean([log_info['actor_loss_info']['policy_Q'] for log_info in log_info_queue.queue]),
-                            'actor_loss/dataset_Q': np.mean([log_info['actor_loss_info']['dataset_Q'] for log_info in log_info_queue.queue]),
-                            'actor_loss/policy_log_probs': np.mean([log_info['actor_loss_info']['policy_log_probs'] for log_info in log_info_queue.queue]),
-                            'actor_loss/dataset_log_probs': np.mean([log_info['actor_loss_info']['dataset_log_probs'] for log_info in log_info_queue.queue]),
+                            f'actor_loss/{key}': np.mean([log_info['actor_loss_info'][key] for log_info in log_info_queue.queue]) for key in log_info_queue.queue[0]['actor_loss_info'].keys()
                         }
                         critic_loss_info = {
-                            'critic_loss/loss': np.mean([log_info['critic_loss_info']['loss'] for log_info in log_info_queue.queue]),
-                            'critic_loss/td_loss': np.mean([log_info['critic_loss_info']['td_loss'] for log_info in log_info_queue.queue]),
-                            'critic_loss/conservative_loss': np.mean([log_info['critic_loss_info']['conservative_loss'] for log_info in log_info_queue.queue]),
-                            'critic_loss/cql_alpha': np.mean([log_info['critic_loss_info']['cql_alpha'] for log_info in log_info_queue.queue]),
-
-                            'critic_loss/q_values': np.mean([log_info['critic_loss_info']['q_values'] for log_info in log_info_queue.queue]),
-                            'critic_loss/target_q_values': np.mean([log_info['critic_loss_info']['target_q_values'] for log_info in log_info_queue.queue]),
-
-                            'critic_loss/logsumexp': np.mean([log_info['critic_loss_info']['logsumexp'] for log_info in log_info_queue.queue]),
-                            'critic_loss/dataset_q_values': np.mean([log_info['critic_loss_info']['dataset_q_values'] for log_info in log_info_queue.queue]),
+                            f'critic_loss/{key}': np.mean([log_info['critic_loss_info'][key] for log_info in log_info_queue.queue]) for key in log_info_queue.queue[0]['critic_loss_info'].keys()
                         }
                         ivf_loss_info = {
-                            'ivf_loss/loss': np.mean([log_info['ivf_loss_info']['loss'] for log_info in log_info_queue.queue]),
-                            'ivf_loss/ivf_values': np.mean([log_info['ivf_loss_info']['ivf_values'] for log_info in log_info_queue.queue]),
+                            f'ivf_loss/{key}': np.mean([log_info['ivf_loss_info'][key] for log_info in log_info_queue.queue]) for key in log_info_queue.queue[0]['ivf_loss_info'].keys()
                         }
+
                         accelerator.log(loss_info, step=completed_steps)
                         accelerator.log(T_loss_info, step=completed_steps)
                         accelerator.log(actor_loss_info, step=completed_steps)
