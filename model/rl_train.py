@@ -344,9 +344,11 @@ def parse_args():
     parser.add_argument("--task_name", type=str, default='maths', help="Task name", choices=['maths'])
 
     # Train utils
-    parser.add_argument("--target_update_method", type=str, default='soft', help="Method of updating target net")
-    # parser.add_argument("--target_update_method", type=str, default='hard', help="Method of updating target net")
-    parser.add_argument("--target_update_interval", type=int, default=128 * 10, help="Update target net every target_update_interval minibatches")
+    parser.add_argument("--target_update_method", type=str, default='hard', help="Method of updating target net")
+    # parser.add_argument("--target_update_method", type=str, default='soft', help="Method of updating target net")
+
+    # parser.add_argument("--target_update_interval", type=int, default=128 * 10, help="Update target net every target_update_interval minibatches")
+    parser.add_argument("--target_update_interval", type=int, default=1, help="Update target net every target_update_interval minibatches")
 
     # parser.add_argument("--checkpointing_steps", type=str, default='1', help="Whether the various states should be saved at the end of every n steps, or 'epoch' for each epoch.")  # Same value as target_update_interval
     parser.add_argument("--checkpointing_steps", type=str, default='epoch', help="Whether the various states should be saved at the end of every n steps, or 'epoch' for each epoch.")  # Same value as target_update_interval
@@ -362,7 +364,10 @@ def parse_args():
     parser.add_argument("--train_file", type=str, default=str(lumos_dir.joinpath(f'data/train/unified/lumos_unified_ground_iterative.jsonl')), help="A csv or a json file containing the training data.")
     parser.add_argument("--max_seq_length", type=int, default=2048, help="The maximum total sequence length (prompt+completion) of each training example.")
     parser.add_argument("--preprocessing_num_workers", type=int, default=16, help="The number of processes to use for the preprocessing.")
-    parser.add_argument("--per_device_train_batch_size", type=int, default=1, help="Batch size (per device) for the training dataloader.")
+
+    # parser.add_argument("--per_device_train_batch_size", type=int, default=1, help="Batch size (per device) for the training dataloader.")
+    parser.add_argument("--per_device_train_batch_size", type=int, default=2, help="Batch size (per device) for the training dataloader.")
+
     # batch_size / num_gpus / batch_size_per_gpu
     parser.add_argument("--gradient_accumulation_steps", type=int, default=int(128 / 1 / 1), help="Number of updates steps to accumulate before performing a backward/update pass.")
     parser.add_argument("--learning_rate", type=float, default=2e-5, help="Initial learning rate (after the potential warmup period) to use.")
@@ -816,6 +821,8 @@ def redirect_output_to_file(func, filename):
 
 
 import deepspeed
+from datetime import datetime
+from deepspeed.accelerator import get_accelerator
 from deepspeed.runtime.zero.partition_parameters import ZeroParamStatus
 def main():
     args = parse_args()
@@ -853,10 +860,6 @@ def main():
     from datetime import timedelta
     accelerate_kwargs_handlers = [InitProcessGroupKwargs(timeout=timedelta(seconds=1800))]
     accelerator = Accelerator(gradient_accumulation_steps=args.gradient_accumulation_steps, cpu=args.cpu, kwargs_handlers=accelerate_kwargs_handlers, **accelerator_log_kwargs)
-
-    print(f'=' * 64)
-    print(f'Accelerator timeout: {accelerator.init_handler.timeout}')
-    print(f'=' * 64)
 
     # Make one log on every process with the configuration for debugging.
     logging.basicConfig(
@@ -1178,7 +1181,9 @@ def main():
         experiment_config = vars(args)
         # TensorBoard cannot log Enums, need the raw value
         experiment_config["lr_scheduler_type"] = experiment_config["lr_scheduler_type"].value
-        accelerator.init_trackers("llm_agent", experiment_config)
+        current_datetime = datetime.now()
+        formatted_datetime = current_datetime.strftime("%Y/%m/%d/%H%M")
+        accelerator.init_trackers(f"llm_agent_{formatted_datetime}", experiment_config)
 
     # Train!
     total_batch_size = args.per_device_train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
@@ -1268,21 +1273,15 @@ def main():
         is_vf_called_list = []
         for step, batch_dict in enumerate(active_dataloader):
             accumulated_steps += 1
-            assert batch_dict['valid_flags'].shape[0] == 1
             with accelerator.accumulate(model):
-                compute_vf = batch_dict['valid_flags'][0] == 1
-                batch_dict['pi_actions'] = batch_dict['states_agent'].clone()
-                batch_dict['invalid_flags'] = (1 - batch_dict['valid_flags']).to(batch_dict['valid_flags'].device)
-                    
-                # Prepare everything with `accelerator`.
-                batch_dict = accelerator.prepare(batch_dict)
+                compute_vf = batch_dict['valid_flags'] == 1
                 is_vf_called_list.append(compute_vf)
-
                 reporter = CustomMemReporter(model)
                 rl_forward_result = accelerator.unwrap_model(model).rl_forward(batch_dict=batch_dict,
                                                                                compute_vf=compute_vf,
                                                                                task_ids=task_ids,
                                                                                gsm_step=gsm_step,
+                                                                               use_distributed=accelerator.use_distributed,
                                                                                )
                 loss = rl_forward_result['loss']
                 log_info_queue.put(rl_forward_result['log_info'])
@@ -1299,23 +1298,12 @@ def main():
                     lr_scheduler.step()
 
             if accumulated_steps % target_update_kwargs['update_interval'] == 0:
-                tmp_unwrapped_model = model
                 params_to_fetch = [
-                    p for p in tmp_unwrapped_model.parameters()
+                    p for p in model.parameters()
                     if hasattr(p, 'ds_id') and p.ds_status == ZeroParamStatus.NOT_AVAILABLE
                 ]
                 with deepspeed.zero.GatheredParameters(params_to_fetch, modifier_rank=0):
-                    tmp_unwrapped_model.target_q_head.q_net_list[0][0].copy_params_from(tmp_unwrapped_model.q_head.q_net_list[0][0].linears[0][0])
-                    tmp_unwrapped_model.target_q_head.q_net_list[1][0].copy_params_from(tmp_unwrapped_model.q_head.q_net_list[1][0].linears[0][0])
-                
-            # target_update_kwargs['source_param_dict'] = source_param_dict
-            # if target_update_kwargs['update_method'] == 'soft':
-                # accelerator.unwrap_model(model).update_target_value_head(target_update_kwargs)
-            # elif target_update_kwargs['update_method'] == 'hard':
-                # if (step + 1) % target_update_kwargs['update_interval'] == 0:
-                    # accelerator.unwrap_model(model).update_target_value_head(target_update_kwargs)
-            # else:
-                # raise NotImplementedError
+                    accelerator.unwrap_model(model).update_target_value_head(target_update_kwargs)
 
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:
@@ -1375,18 +1363,7 @@ def main():
                 if completed_steps >= args.max_train_steps:
                     break
 
-
-                # state_dict = accelerator.get_state_dict(model)
-                # source_param_dict = {name: state_dict[f'q_head.{name}'] for name, _ in model.q_head.named_parameters()}
-                # target_param_dict = {name: state_dict[f'target_q_head.{name}'] for name, _ in model.target_q_head.named_parameters()}
-
-                # print(f'=' * 64)
-                # for key, value in source_param_dict.items():
-                #     print(f'Source {key}: {value}')
-                # for key, value in target_param_dict.items():
-                #     print(f'Target {key}: {value}')
-                # print(f'=' * 64)
-
+            get_accelerator().empty_cache()
         
         if args.checkpointing_steps == "epoch":
             output_dir = f"epoch_{epoch}"

@@ -30,7 +30,7 @@ class InValidFlagHead(nn.Module):
 
         self.tensor_dtype = head_kwargs['tensor_dtype']
         self.invalid_flag_net = nn.Sequential(
-            deepspeed.zero.TiledLinear(hidden_size, 1, dtype=self.tensor_dtype),
+            nn.Linear(hidden_size, 1, dtype=self.tensor_dtype),
             nn.Sigmoid(),
         )
 
@@ -40,7 +40,6 @@ class InValidFlagHead(nn.Module):
         return invalid_flag_tensor
 
 
-import deepspeed
 class EnsembleQHead(nn.Module):
     def __init__(self, config: AutoConfig, head_kwargs: dict):
         super().__init__()
@@ -55,8 +54,7 @@ class EnsembleQHead(nn.Module):
         self.q_net_list = nn.ModuleList()
         for net_idx in range(self.num_network):
             q_module = nn.Sequential(
-                deepspeed.zero.TiledLinear(hidden_size, action_space_size, dtype=self.tensor_dtype),
-                # nn.Linear(hidden_size, action_space_size, dtype=self.tensor_dtype),
+                nn.Linear(hidden_size, action_space_size, dtype=self.tensor_dtype),
             )
             
             self.q_net_list.append(q_module)
@@ -137,24 +135,13 @@ class CQLModelForCausalLM(nn.Module):
     
     @torch.no_grad()
     def update_target_value_head(self, update_kwargs: dict):
-        source_param_dict = update_kwargs['source_param_dict']
         update_method = update_kwargs['update_method']
         if update_method == 'hard':
-            self.target_q_head.load_state_dict(source_param_dict)
+            self.target_q_head.load_state_dict(self.q_head.state_dict())
         elif update_method == 'soft':
             tau = update_kwargs['tau']
-            for target_np, source_np in zip(self.target_q_head.named_parameters(), source_param_dict.items()):
-                param_name = target_np[0]
-                target_param = target_np[1]
-                source_param = source_np[1]
-                try:
-                    target_param.data.copy_(tau * source_param.clone().to(target_param.device).data + (1 - tau) * target_param.data)
-                except RuntimeError as e:
-                    print(f'=' * 100)
-                    print(f'param name: {param_name}')
-                    print(f'source_param: {source_param}')
-                    print(f'target_param: {target_param}')
-                    print(f'=' * 100)
+            for target_param, source_param in zip(self.target_q_head.parameters(), self.q_head.parameters()):
+                target_param.data.copy_(tau * source_param.data + (1 - tau) * target_param.data)
         else:
             raise NotImplementedError
 
@@ -166,7 +153,7 @@ class CQLModelForCausalLM(nn.Module):
         else:
             actions = action_dist.sample()
 
-        actions = actions.unsqueeze(dim=0)  # Used for indexing, so do not need to be converted to self.tensor_dtype
+        actions = actions.unsqueeze(dim=-1)  # Used for indexing, so do not need to be converted to self.tensor_dtype
         log_probs = action_dist.logits.to(self.tensor_dtype)
 
         return actions, log_probs
@@ -252,7 +239,7 @@ class CQLModelForCausalLM(nn.Module):
                             ) -> dict:
         q_values = torch.gather(q_table, dim=-1, index=actions.unsqueeze(dim=-1))
         next_q_values = torch.gather(next_q_table, dim=-1, index=new_next_actions)
-        target_q_values = rewards.to(self.tensor_dtype) + self.value_optim_kwargs['gamma'] * (1 - dones.to(self.tensor_dtype)) * next_q_values.detach()
+        target_q_values = rewards.unsqueeze(dim=-1).to(self.tensor_dtype) + self.value_optim_kwargs['gamma'] * (1 - dones.unsqueeze(dim=-1).to(self.tensor_dtype)) * next_q_values.detach()
         td_loss = F.mse_loss(q_values, target_q_values).mean(dim=0)
         conservative_loss_result = self.compute_conservative_loss(q_table=q_table, actions=actions)
         conservative_loss = conservative_loss_result['loss']
@@ -292,45 +279,64 @@ class CQLModelForCausalLM(nn.Module):
                 **kwargs,
                 ) -> dict:
         compute_vf = kwargs['compute_vf']
+        use_distributed = kwargs['use_distributed']
+        batch_size = batch_dict['actions'].shape[0]
 
         self.eval()
 
+        max_pi_actions_length = batch_dict['states_agent'].shape[1]
+        pi_actions_dict = {}
+        invalid_flags = batch_dict['valid_flags'].clone()
         new_line_token = self.tokenizer.encode("\n", add_special_tokens=False)[-1]
         stop_id_sequence = [new_line_token]
-        ivf_input_ids = batch_dict['states_user']
-        ivf_action_list = []
         max_new_token_cnt = 256
-        end_idx = max_new_token_cnt
-        for new_token_idx in range(max_new_token_cnt):
-            ivf_outputs = self.pretrained_model(input_ids=ivf_input_ids, use_cache=False)
-            new_action_logits = ivf_outputs.logits[:, -1, :]
-            ivf_action, _ = self.compute_action_and_log_probs_from_logits(logits=new_action_logits, deterministic=True)
-            ivf_action_list.append(ivf_action.item())
-            ivf_input_ids = torch.cat([ivf_input_ids, ivf_action], dim=-1)
-
-            # Can not break o.t. parallel runing gpus will hang
-            if ivf_action.item() == self.tokenizer.eos_token_id or ivf_input_ids[0, -len(stop_id_sequence):].tolist() == stop_id_sequence:
-                end_idx = min(end_idx, new_token_idx)
-
-        self.train()
-
-        ivf_action_list = ivf_action_list[:end_idx]  # Only remain valid actions
-        actions = self.tokenizer.decode(ivf_action_list)
-        pi_valid_flags = []
-        eval_batch_size = 1
+        # max_new_token_cnt = 16
         task_ids = kwargs['task_ids']
         gsm_step = kwargs['gsm_step']
-        for batch_idx in range(eval_batch_size):
+        for batch_idx in range(batch_size):
+            end_idx = max_new_token_cnt
+            ivf_action_list = []
+            indices = (batch_dict['states_user'][batch_idx] == self.tokenizer.pad_token_id).nonzero()
+            # Without padding
+            if indices.numel() == 0:
+                ivf_input_ids = batch_dict['states_user'][batch_idx].unsqueeze(dim=0)
+            # With padding
+            else:
+                ivf_input_ids = batch_dict['states_user'][batch_idx, :indices[0]].unsqueeze(dim=0)
+            for new_token_idx in range(max_new_token_cnt):
+                ivf_outputs = self.pretrained_model(input_ids=ivf_input_ids, use_cache=False)
+                new_action_logits = ivf_outputs.logits[:, -1, :]
+                ivf_action, _ = self.compute_action_and_log_probs_from_logits(logits=new_action_logits, deterministic=True)
+                ivf_action_list.append(ivf_action.item())
+                ivf_input_ids = torch.cat([ivf_input_ids, ivf_action], dim=-1)
+
+                # Can not break o.t. parallel runing gpus will hang
+                if ivf_action.item() == self.tokenizer.eos_token_id or ivf_input_ids[-len(stop_id_sequence):].tolist() == stop_id_sequence:
+                    end_idx = min(end_idx, new_token_idx + 1)
+
+            actions_tensor = torch.as_tensor(ivf_action_list)[:end_idx]
+            actions = self.tokenizer.decode(actions_tensor)
             task_type = '_'.join(task_ids[batch_dict['task_ids'][batch_idx]].split('_')[:-1])
             if task_type == 'maths':
                 step_result = gsm_step(batch_dict, self.tokenizer, actions)
             else:
                 raise NotImplementedError
-        pi_valid_flags.append(step_result['valid_flag'])
 
-        if compute_vf:
-            batch_dict['pi_actions'] = torch.as_tensor(ivf_action_list).unsqueeze(dim=0).to(batch_dict['states_agent'].device)
-            batch_dict['invalid_flags'] = 1 - torch.as_tensor(pi_valid_flags).to(batch_dict['valid_flags'].device)
+            pi_valid_flag = int(step_result['valid_flag'])
+            if compute_vf[batch_idx]:
+                max_pi_actions_length = max(max_pi_actions_length, actions_tensor.shape[0])
+                pi_actions_dict[batch_idx] = actions_tensor.to(batch_dict['states_agent'].device)
+                invalid_flags[batch_idx] = 1 - torch.as_tensor(pi_valid_flag).to(batch_dict['valid_flags'].device)
+        
+        pi_actions = torch.ones((batch_size, max_pi_actions_length), dtype=torch.long) * self.tokenizer.pad_token_id
+        for batch_idx in range(batch_size):
+            actions = pi_actions_dict.get(batch_idx, None)
+            if actions is None:
+                actions = batch_dict['states_agent'][batch_idx]
+
+            pi_actions[batch_idx][:actions.shape[0]] = actions
+
+        self.train()
 
         states_inputs = dict(
             input_ids = torch.cat([batch_dict['states_user'], batch_dict['states_agent']], dim=1),
@@ -347,28 +353,32 @@ class CQLModelForCausalLM(nn.Module):
         logits_on_states = states_outputs.logits[:, -1, :]
         logits_on_next_states = next_states_outputs.logits[:, -1, :]
 
-        if compute_vf:
-            ivf_inputs = dict(
-                input_ids = torch.cat([batch_dict['states_user'], batch_dict['pi_actions']], dim=1).to(torch.long),
-            )
-        else:
-            ivf_inputs = dict(
-                input_ids = torch.cat([batch_dict['states_user'], batch_dict['states_agent']], dim=1).to(torch.long),
-            )
+        ivf_inputs = dict(
+            input_ids = torch.cat([batch_dict['states_user'], pi_actions.to(batch_dict['states_user'].device)], dim=1).to(torch.long),
+        )
         ivf_head_input_on_states = self.pretrained_model(**ivf_inputs, use_cache=False, output_hidden_states=True).hidden_states[-1][:, -1, :]
+
+        if not use_distributed:
+            self.ivf_head.to(ivf_head_input_on_states.device)
+
         ivf_info = self.compute_ivf_info(ivf_head_input_on_states=ivf_head_input_on_states)
 
         # Using token_space to mask out invalid actions
         states_token_space_mask = torch.ones_like(logits_on_states, dtype=torch.bool)
         next_states_token_space_mask = torch.ones_like(logits_on_next_states, dtype=torch.bool)
-        states_token_space_mask.scatter_(dim=1, index=self.token_space.unsqueeze(dim=0).to(logits_on_states.device), value=False)
-        next_states_token_space_mask.scatter_(dim=1, index=self.token_space.unsqueeze(dim=0).to(logits_on_next_states.device), value=False)
+        states_token_space_mask.scatter_(dim=1, index=self.token_space.unsqueeze(dim=0).repeat(batch_size, 1).to(logits_on_states.device), value=False)
+        next_states_token_space_mask.scatter_(dim=1, index=self.token_space.unsqueeze(dim=0).repeat(batch_size, 1).to(logits_on_next_states.device), value=False)
         logits_on_states[states_token_space_mask] = -float('inf')
         logits_on_next_states[next_states_token_space_mask] = -float('inf')
 
         new_actions, log_probs = self.compute_action_and_log_probs_from_logits(logits=logits_on_states, deterministic=False)
         ts_log_probs = log_probs[:, self.token_space]
         new_next_actions, _ = self.compute_action_and_log_probs_from_logits(logits=logits_on_next_states, deterministic=False)
+
+        if not use_distributed:
+            self.q_head.to(q_head_input_on_states.device)
+            self.target_q_head.to(q_head_input_on_next_states.device)
+
         q_table = self.q_head(q_head_input_on_states).min(dim=-1).values
         next_q_table = self.target_q_head(q_head_input_on_next_states).min(dim=-1).values
 
@@ -385,13 +395,9 @@ class CQLModelForCausalLM(nn.Module):
         actor_loss_result = self.compute_actor_loss(alpha=sac_alpha, ts_log_probs=ts_log_probs, q_table=q_table, ivf_rewards=ivf_rewards)
         actor_loss = actor_loss_result['loss']
 
-        if compute_vf:
-            ivf_loss_result = self.compute_invalid_flag_loss(ivf_values=ivf_values, invalid_flags=batch_dict['invalid_flags'])
-            ivf_loss = ivf_loss_result['loss']
-            loss = sac_alpha_loss + actor_loss + critic_loss + ivf_loss
-        else:
-            ivf_loss = torch.as_tensor(0.0, dtype=self.tensor_dtype)
-            loss = sac_alpha_loss + actor_loss + critic_loss
+        ivf_loss_result = self.compute_invalid_flag_loss(ivf_values=ivf_values, invalid_flags=invalid_flags)
+        ivf_loss = ivf_loss_result['loss']
+        loss = sac_alpha_loss + actor_loss + critic_loss + ivf_loss
 
         T_loss_info = {
             'loss': sac_alpha_loss.item(),
@@ -424,7 +430,7 @@ class CQLModelForCausalLM(nn.Module):
         ivf_loss_info = {
             'loss': ivf_loss.item(),
             'ivf_values': ivf_values.mean().item() if ivf_values is not None else 0.0,
-            'compute_ivf': float(compute_vf),
+            'compute_ivf': compute_vf.to(self.tensor_dtype).mean().item(),
         }
         log_info = dict(
             T_loss=sac_alpha_loss.item(),
