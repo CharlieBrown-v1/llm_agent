@@ -389,8 +389,15 @@ class CQLModelForCausalLM(nn.Module):
                 f'=' * 64,
             ]
             error_hint_str = '\n'.join(error_hint_list)
-            redirect_output_to_file(print(error_hint_str), lumos_dir.joinpath('results/errors.txt'))
-            
+
+            original_stdout = sys.stdout
+            try:
+                with open(lumos_dir.joinpath('results/errors.txt'), 'a') as file:
+                    sys.stdout = file
+                    print(error_hint_str)
+            finally:
+                sys.stdout = original_stdout
+
             ivf_inputs = dict(
                 input_ids = torch.cat([batch_dict['states_user'], pi_actions.to(batch_dict['states_user'].device)], dim=1).to(torch.long),
             )
