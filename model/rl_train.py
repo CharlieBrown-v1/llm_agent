@@ -507,7 +507,7 @@ def wrap_dataset_vf(args: argparse.Namespace, dataset: datasets.Dataset, task_na
 
     debug_start_idx = 20000
     if args.debug or 'gpt2' in args.model_name_or_path:
-        wrap_tqdm = tqdm(range(debug_start_idx, debug_start_idx + 10))
+        wrap_tqdm = tqdm(range(debug_start_idx, debug_start_idx + 100))
 
     wrap_tqdm.set_description("Wrapping dataset to RL format")
     for data_idx in wrap_tqdm:
@@ -731,7 +731,6 @@ def gsm_step(batch_dict: dict, tokenizer: AutoTokenizer, actions: str) -> dict:
 
 # Fine grained (Only skip QA related processs at execution-level)
 def complex_qa_step(batch_dict: dict, tokenizer: AutoTokenizer, actions: str) -> dict:
-    assert len(batch_dict['states_user']) == 1, "Only support batch_size=1 for now."
     state_user = tokenizer.decode(batch_dict['states_user'][0])
     user_block_str = '<|user|>\n'
     assistant_block_str = '\n<|assistant|>\n'

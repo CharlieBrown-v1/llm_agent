@@ -159,14 +159,14 @@ class CQLModelForCausalLM(nn.Module):
             raise NotImplementedError
 
     def compute_action_and_log_probs_from_logits(self, logits: torch.Tensor, deterministic: bool = False) -> Tuple[torch.Tensor, torch.Tensor]:
-        assert len(logits.shape) == 2, "logits should be a 2D tensor with shape (B, V)!"
+        assert len(logits.shape) == 2, "logits should be a 2D tensor with shape = (B, V)!"
         action_dist = torch.distributions.Categorical(logits=logits)
         if deterministic:
             actions = action_dist.mode
         else:
             actions = action_dist.sample()
 
-        actions = actions.unsqueeze(dim=-1)  # Used for indexing, so do not need to be converted to self.tensor_dtype
+        actions = actions.unsqueeze(dim=0)  # Used for indexing, so do not need to be converted to self.tensor_dtype
         log_probs = action_dist.logits.to(self.tensor_dtype)
 
         return actions, log_probs
@@ -349,11 +349,11 @@ class CQLModelForCausalLM(nn.Module):
 
         if compute_vf:
             ivf_inputs = dict(
-                input_ids = torch.cat([batch_dict['states_user'], batch_dict['pi_actions']], dim=1),
+                input_ids = torch.cat([batch_dict['states_user'], batch_dict['pi_actions']], dim=1).to(torch.long),
             )
         else:
             ivf_inputs = dict(
-                input_ids = torch.cat([batch_dict['states_user'], batch_dict['states_agent']], dim=1),
+                input_ids = torch.cat([batch_dict['states_user'], batch_dict['states_agent']], dim=1).to(torch.long),
             )
         ivf_head_input_on_states = self.pretrained_model(**ivf_inputs, use_cache=False, output_hidden_states=True).hidden_states[-1][:, -1, :]
         ivf_info = self.compute_ivf_info(ivf_head_input_on_states=ivf_head_input_on_states)
