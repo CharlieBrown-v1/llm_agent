@@ -7,7 +7,6 @@ except KeyError:
 import argparse
 import logging
 import math
-import random
 import datasets
 from datasets import load_dataset,Features,Value
 import torch
@@ -40,7 +39,7 @@ from peft import LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_tr
 import numpy as np
 from pathlib import Path
 from dataclasses import dataclass
-from model.rl_models import CQLModelForCausalLM
+from model.rl_models import CQLModelForCausalLM, redirect_output_to_file
 from eval.utils import rl_generate_completions, generate_completions
 
 from eval.gsm.run_eval import execute as gsm_execute
@@ -346,9 +345,8 @@ def parse_args():
     # Train utils
     parser.add_argument("--target_update_method", type=str, default='hard', help="Method of updating target net")
     # parser.add_argument("--target_update_method", type=str, default='soft', help="Method of updating target net")
-
-    # parser.add_argument("--target_update_interval", type=int, default=128 * 10, help="Update target net every target_update_interval minibatches")
-    parser.add_argument("--target_update_interval", type=int, default=1, help="Update target net every target_update_interval minibatches")
+    
+    parser.add_argument("--target_update_interval", type=int, default=128 * 10, help="Update target net every target_update_interval minibatches")
 
     # parser.add_argument("--checkpointing_steps", type=str, default='1', help="Whether the various states should be saved at the end of every n steps, or 'epoch' for each epoch.")  # Same value as target_update_interval
     parser.add_argument("--checkpointing_steps", type=str, default='epoch', help="Whether the various states should be saved at the end of every n steps, or 'epoch' for each epoch.")  # Same value as target_update_interval
@@ -800,24 +798,6 @@ def update_invalid_flags(batch_dict: dict, task_ids: list, model: CQLModelForCau
     model.train()
     
     return batch_dict
-
-
-import sys
-def redirect_output_to_file(func, filename):
-    # Save the current standard output
-    original_stdout = sys.stdout
-    
-    try:
-        # Open the file in write mode
-        with open(filename, 'w') as file:
-            # Redirect the standard output to the file
-            sys.stdout = file
-            
-            # Call the function that prints content
-            func()
-    finally:
-        # Restore the original standard output
-        sys.stdout = original_stdout
 
 
 import deepspeed

@@ -1,3 +1,4 @@
+import sys
 import torch
 import torch.nn.functional as F
 
@@ -18,6 +19,26 @@ from transformers import (
     BitsAndBytesConfig,
 )
 from pathlib import Path
+
+
+lumos_dir = Path(__file__).parent.parent
+
+
+def redirect_output_to_file(func, filename):
+    # Save the current standard output
+    original_stdout = sys.stdout
+    
+    try:
+        # Open the file in write mode
+        with open(filename, 'w') as file:
+            # Redirect the standard output to the file
+            sys.stdout = file
+            
+            # Call the function that prints content
+            func()
+    finally:
+        # Restore the original standard output
+        sys.stdout = original_stdout
 
 
 class InValidFlagHead(nn.Module):
@@ -353,10 +374,27 @@ class CQLModelForCausalLM(nn.Module):
         logits_on_states = states_outputs.logits[:, -1, :]
         logits_on_next_states = next_states_outputs.logits[:, -1, :]
 
-        ivf_inputs = dict(
-            input_ids = torch.cat([batch_dict['states_user'], pi_actions.to(batch_dict['states_user'].device)], dim=1).to(torch.long),
-        )
-        ivf_head_input_on_states = self.pretrained_model(**ivf_inputs, use_cache=False, output_hidden_states=True).hidden_states[-1][:, -1, :]
+        try:
+            ivf_inputs = dict(
+                input_ids = torch.cat([batch_dict['states_user'], pi_actions.to(batch_dict['states_user'].device)], dim=1),
+            )
+            ivf_head_input_on_states = self.pretrained_model(**ivf_inputs, use_cache=False, output_hidden_states=True).hidden_states[-1][:, -1, :]
+        except RuntimeError:
+            error_hint_list = [
+                f'=' * 64,
+                f'Error states_user dtype: {batch_dict["states_user"].dtype}',
+                f'Error states_user: {batch_dict["states_user"]}',
+                f'Error pi_actions dtype: {pi_actions.dtype}',
+                f'Error pi_actions: {pi_actions}',
+                f'=' * 64,
+            ]
+            error_hint_str = '\n'.join(error_hint_list)
+            redirect_output_to_file(print(error_hint_str), lumos_dir.joinpath('results/errors.txt'))
+            
+            ivf_inputs = dict(
+                input_ids = torch.cat([batch_dict['states_user'], pi_actions.to(batch_dict['states_user'].device)], dim=1).to(torch.long),
+            )
+            ivf_head_input_on_states = self.pretrained_model(**ivf_inputs, use_cache=False, output_hidden_states=True).hidden_states[-1][:, -1, :]
 
         if not use_distributed:
             self.ivf_head.to(ivf_head_input_on_states.device)
