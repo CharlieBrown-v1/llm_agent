@@ -310,11 +310,12 @@ class CQLModelForCausalLM(nn.Module):
         invalid_flags = batch_dict['valid_flags'].clone()
         new_line_token = self.tokenizer.encode("\n", add_special_tokens=False)[-1]
         stop_id_sequence = [new_line_token]
-        max_new_token_cnt = 256
-        # max_new_token_cnt = 16
         task_ids = kwargs['task_ids']
         gsm_step = kwargs['gsm_step']
         for batch_idx in range(batch_size):
+            max_new_token_cnt = 256
+            # max_new_token_cnt = 16
+            max_new_token_cnt = min(kwargs['max_seq_length'] - batch_dict['states_user'][batch_idx].shape[0], max_new_token_cnt)
             end_idx = max_new_token_cnt
             ivf_action_list = []
             indices = (batch_dict['states_user'][batch_idx] == self.tokenizer.pad_token_id).nonzero()

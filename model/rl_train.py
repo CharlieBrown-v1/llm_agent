@@ -55,6 +55,8 @@ model_name_list = [
     'gpt2',
     'lumos',
 ]
+cuda_usage_dir = lumos_dir.joinpath('cuda_usage')
+cuda_usage_dir.mkdir(exist_ok=True, parents=True)
 
 
 @dataclass
@@ -511,6 +513,7 @@ def wrap_dataset_vf(args: argparse.Namespace, dataset: datasets.Dataset, task_na
     debug_start_idx = 20000
     if args.debug or 'gpt2' in args.model_name_or_path:
         wrap_tqdm = tqdm(range(debug_start_idx, debug_start_idx + 100))
+    wrap_tqdm = tqdm(range(debug_start_idx, debug_start_idx + 1))
 
     wrap_tqdm.set_description("Wrapping dataset to RL format")
     for data_idx in wrap_tqdm:
@@ -753,6 +756,7 @@ def complex_qa_step(batch_dict: dict, tokenizer: AutoTokenizer, actions: str) ->
 
 
 def update_invalid_flags(batch_dict: dict, task_ids: list, model: CQLModelForCausalLM, tokenizer: AutoTokenizer) -> dict:
+    raise NotImplementedError
     model.eval()
 
     new_line_token = tokenizer.encode("\n", add_special_tokens=False)[-1] # get the last token because the tokenizer may add space tokens at the start.
@@ -815,8 +819,6 @@ def main():
         args.target_update_interval = 1  # check whether target update works
         args.with_tracking = True  # check whether logger module works
         args.model_name_or_path = '/home/ubuntu/yangsihang/llm_ref/.cache/models--gpt2/snapshots/11c5a3d5811f50298f278a704980280950aedb10'
-        if 'gpt2' in args.model_name_or_path:
-            args.use_flash_attn = False  # GPT2 not support it!
         args.output_dir = str(Path(args.output_dir).joinpath('debug'))
     # Train config
     else:
@@ -1046,6 +1048,17 @@ def main():
     # for index in random.sample(range(len(rl_train_dataset)), 3):
         # logger.info(f"Sample {index} of the training set: {rl_train_dataset[index]}.")
 
+    model_name = None
+    for tmp_model_name in model_name_list:
+        if tmp_model_name in args.model_name_or_path:
+            model_name = tmp_model_name
+    assert model_name is not None
+
+    # Update GPT2 settings
+    if 'gpt2' == model_name:
+        args.use_flash_attn = False  # GPT2 not support it!
+        args.max_seq_length = 1024 # GPT2 has 1024 only!
+
     # Wrap LM to RL-style
     q_head_kwargs = {
         'num_network': args.num_network,
@@ -1089,7 +1102,7 @@ def main():
         rl_train_dataset,
         shuffle=True, 
         collate_fn=DataCollatorForSeqRLVF(tokenizer=tokenizer, model=model.pretrained_model, padding="longest"),
-        batch_size=args.per_device_train_batch_size
+        batch_size=args.per_device_train_batch_size,
     )
 
     # Optimizer
@@ -1138,10 +1151,21 @@ def main():
         num_warmup_steps=int(num_training_steps_for_scheduler * args.warmup_ratio),
     )
 
+    reporter = CustomMemReporter(model)
+
     # Prepare everything with `accelerator`.
     model, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
         model, optimizer, train_dataloader, lr_scheduler
     )
+    # accelerator.state.deepspeed_plugin.deepspeed_config['train_micro_batch_size_per_gpu'] = args.per_device_train_batch_size
+    # model, optimizer, lr_scheduler = accelerator.prepare(
+        # model, optimizer, lr_scheduler
+    # )
+
+    output_filename = cuda_usage_dir.joinpath(f"Desc={model_name.upper()}&Stage=Prepare.txt")
+    redirect_output_to_file(reporter.report, output_filename)
+
+
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
@@ -1226,12 +1250,8 @@ def main():
     model.train()
     accumulated_steps = 0
 
-    model_name = None
-    for tmp_model_name in model_name_list:
-        if tmp_model_name in args.model_name_or_path:
-            model_name = tmp_model_name
-    assert model_name is not None
-
+    import queue
+    log_info_queue = queue.Queue(maxsize=200)
     for epoch in range(starting_epoch, args.num_train_epochs):
         total_loss = 0
         if (
@@ -1246,10 +1266,6 @@ def main():
         else:
             active_dataloader = train_dataloader
         
-        import queue
-        log_info_queue = queue.Queue(maxsize=200)
-        cuda_usage_dir = lumos_dir.joinpath('cuda_usage')
-        cuda_usage_dir.mkdir(exist_ok=True, parents=True)
         is_vf_called_list = []
         for step, batch_dict in enumerate(active_dataloader):
             accumulated_steps += 1
@@ -1262,6 +1278,7 @@ def main():
                                                                                task_ids=task_ids,
                                                                                gsm_step=gsm_step,
                                                                                use_distributed=accelerator.use_distributed,
+                                                                               max_seq_length=args.max_seq_length,
                                                                                )
                 loss = rl_forward_result['loss']
                 log_info_queue.put(rl_forward_result['log_info'])
@@ -1289,10 +1306,6 @@ def main():
             if accelerator.sync_gradients:
                 progress_bar.update(1)
                 completed_steps += 1
-
-                # Only record when sync_gradients
-                output_filename = cuda_usage_dir.joinpath(f"Desc={model_name.upper()}&Epoch={epoch}&Step={step}.txt")
-                redirect_output_to_file(reporter.report, output_filename)
 
                 if args.logging_steps and completed_steps % args.logging_steps == 0:
                     avg_loss = accelerator.gather(total_loss).mean().item() / args.gradient_accumulation_steps / args.logging_steps
@@ -1342,6 +1355,10 @@ def main():
 
                 if completed_steps >= args.max_train_steps:
                     break
+
+            # Record every step
+            output_filename = cuda_usage_dir.joinpath(f"Desc={model_name.upper()}&Epoch={epoch}&Step={step}.txt")
+            redirect_output_to_file(reporter.report, output_filename)
 
             get_accelerator().empty_cache()
         
