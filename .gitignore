@@ -13,6 +13,7 @@ d3rlpy_*/
 log/
 figs/
 data/
+clash/
 models/
 scripts/
 wandb/

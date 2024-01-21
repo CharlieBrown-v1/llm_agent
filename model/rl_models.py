@@ -1,4 +1,5 @@
 import sys
+import json
 import torch
 import torch.nn.functional as F
 
@@ -125,10 +126,16 @@ class CQLModelForCausalLM(nn.Module):
             1) = self.q_head
             2) ref: https://github.com/takuseno/d3rlpy/blob/master/d3rlpy/algos/qlearning/torch/cql_impl.py#L219
         """
+        self.q_head_kwargs = q_head_kwargs
+        self.cql_kwargs = cql_kwargs
         self.alpha_optim_kwargs = alpha_optim_kwargs
         self.policy_optim_kwargs = policy_optim_kwargs
         self.value_optim_kwargs = value_optim_kwargs
         self.ivf_optim_kwargs = ivf_optim_kwargs
+
+        if self.policy_optim_kwargs['frozen_attn']:
+            for param in self.pretrained_model.model.parameters():
+                param.requires_grad = False
 
         self.log_alpha = Scalar(init_value=0.0, dtype=self.tensor_dtype)
         self.alpha_multiplier = self.alpha_optim_kwargs['alpha_multiplier']
@@ -140,17 +147,16 @@ class CQLModelForCausalLM(nn.Module):
         ivf_head_kwargs = {
             'tensor_dtype': self.tensor_dtype,
         }
-        q_head_kwargs['tensor_dtype'] = self.tensor_dtype
+        tmp_q_head_kwargs = self.q_head_kwargs.copy()
+        tmp_q_head_kwargs['tensor_dtype'] = self.tensor_dtype
         self.ivf_head = InValidFlagHead(config=self.pretrained_model.config, head_kwargs=ivf_head_kwargs)
-        self.q_head = EnsembleQHead(config=self.pretrained_model.config, head_kwargs=q_head_kwargs)
-        self.target_q_head = EnsembleQHead(config=self.pretrained_model.config, head_kwargs=q_head_kwargs)
+        self.q_head = EnsembleQHead(config=self.pretrained_model.config, head_kwargs=tmp_q_head_kwargs)
+        self.target_q_head = EnsembleQHead(config=self.pretrained_model.config, head_kwargs=tmp_q_head_kwargs)
         self.target_q_head.load_state_dict(self.q_head.state_dict())
         for param in self.target_q_head.parameters():
             param.requires_grad = False
 
         self.cql_alpha = self.value_optim_kwargs['cql_alpha']
-
-        self.cql_kwargs = cql_kwargs
         if self.cql_kwargs['use_lagrange']:
             raise NotImplementedError
     
@@ -314,7 +320,7 @@ class CQLModelForCausalLM(nn.Module):
         gsm_step = kwargs['gsm_step']
         for batch_idx in range(batch_size):
             max_new_token_cnt = 256
-            # max_new_token_cnt = 16
+            max_new_token_cnt = 32
             max_new_token_cnt = min(kwargs['max_seq_length'] - batch_dict['states_user'][batch_idx].shape[0], max_new_token_cnt)
             end_idx = max_new_token_cnt
             ivf_action_list = []
@@ -380,9 +386,10 @@ class CQLModelForCausalLM(nn.Module):
                 input_ids = torch.cat([batch_dict['states_user'], pi_actions.to(batch_dict['states_user'].device)], dim=1),
             )
             ivf_head_input_on_states = self.pretrained_model(**ivf_inputs, use_cache=False, output_hidden_states=True).hidden_states[-1][:, -1, :]
-        except RuntimeError:
+        except RuntimeError as e:
             error_hint_list = [
                 f'=' * 64,
+                f'Error msg: {e}',
                 f'Error states_user dtype: {batch_dict["states_user"].dtype}',
                 f'Error states_user: {batch_dict["states_user"]}',
                 f'Error pi_actions dtype: {pi_actions.dtype}',
@@ -552,10 +559,34 @@ class CQLModelForCausalLM(nn.Module):
         target_q_head_save_path = Path(save_directory).joinpath('target_q_head.pt')
         torch.save(self.target_q_head.state_dict(), target_q_head_save_path)
 
+        token_space_save_path = Path(save_directory).joinpath('token_space.pth')
+        torch.save(self.token_space, token_space_save_path)
+
+        kwargs_dict = dict(
+            q_head_kwargs=self.q_head_kwargs,
+            cql_kwargs=self.cql_kwargs,
+            alpha_optim_kwargs=self.alpha_optim_kwargs,
+            policy_optim_kwargs=self.policy_optim_kwargs,
+            value_optim_kwargs=self.value_optim_kwargs,
+            ivf_optim_kwargs=self.ivf_optim_kwargs,
+        )
+        kwargs_dict_save_path = Path(save_directory).joinpath('kwargs_dict.json')
+        with open(kwargs_dict_save_path, 'w') as fw:
+            json.dump(kwargs_dict, fw)
+
     def from_pretrained(self, args, save_directory: str):
+        ivf_head_save_path = Path(save_directory).joinpath('ivf_head.pt')
+        self.ivf_head.load_state_dict(torch.load(ivf_head_save_path))
+        q_head_save_path = Path(save_directory).joinpath('q_head.pt')
+        self.q_head.load_state_dict(torch.load(q_head_save_path))
+        target_q_head_save_path = Path(save_directory).joinpath('target_q_head.pt')
+        self.target_q_head.load_state_dict(torch.load(target_q_head_save_path))
+
+    @staticmethod
+    def prepare_load_context(args, save_directory: str) -> dict:
         config = AutoConfig.from_pretrained(save_directory)
         if args.debug:
-            self.pretrained_model = AutoModelForCausalLM.from_pretrained(
+            pretrained_model = AutoModelForCausalLM.from_pretrained(
                 save_directory,
                 from_tf=bool(".ckpt" in save_directory),
                 config=config,
@@ -565,7 +596,7 @@ class CQLModelForCausalLM(nn.Module):
                 device_map='auto',
             )
         else:
-            self.pretrained_model = AutoModelForCausalLM.from_pretrained(
+            pretrained_model = AutoModelForCausalLM.from_pretrained(
                 save_directory,
                 from_tf=bool(".ckpt" in save_directory),
                 config=config,
@@ -573,11 +604,19 @@ class CQLModelForCausalLM(nn.Module):
                 use_flash_attention_2=True if args.use_flash_attn else False,
                 torch_dtype=config.torch_dtype,
             )
-        self.tokenizer = AutoTokenizer.from_pretrained(save_directory, use_fast=not args.use_slow_tokenizer)
-
-        ivf_head_save_path = Path(save_directory).joinpath('ivf_head.pt')
-        self.ivf_head.load_state_dict(torch.load(ivf_head_save_path))
-        q_head_save_path = Path(save_directory).joinpath('q_head.pt')
-        self.q_head.load_state_dict(torch.load(q_head_save_path))
-        target_q_head_save_path = Path(save_directory).joinpath('target_q_head.pt')
-        self.target_q_head.load_state_dict(torch.load(target_q_head_save_path))
+        tokenizer = AutoTokenizer.from_pretrained(save_directory, use_fast=not args.use_slow_tokenizer)
+        token_space_save_path = Path(save_directory).joinpath('token_space.pth')
+        token_space = torch.load(token_space_save_path)
+        kwargs_dict_save_path = Path(save_directory).joinpath('kwargs_dict.json')
+        with open(kwargs_dict_save_path, 'r') as fr:
+            kwargs_dict = json.load(fr)
+        
+        context_dict = dict(
+            pretrained_model=pretrained_model,
+            tokenizer=tokenizer,
+            token_space=token_space,
+        )
+        for key, value in kwargs_dict.items():
+            context_dict[key] = value
+        
+        return context_dict
