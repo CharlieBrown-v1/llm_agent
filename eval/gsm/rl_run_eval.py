@@ -258,7 +258,7 @@ if __name__ == "__main__":
     parser.add_argument("--max_num_examples", type=int, default=10, help="maximum number of examples to evaluate.")
     parser.add_argument("--save_dir", type=str, default=lumos_dir_path.joinpath('results/gsm'), help="directory to save the results.")
     parser.add_argument("--model_name_or_path", type=str, default=test_model_path, help="if specified, we will load the model to generate the predictions.")
-    parser.add_argument("--eval_batch_size", type=int, default=8, help="batch size for evaluation.")
+    parser.add_argument("--eval_batch_size", type=int, default=1, help="batch size for evaluation.")
     parser.add_argument("--formulation", type=str, default='lumos_iterative', help="considered formulation.")
     parser.add_argument("--load_in_8bit", action="store_true", help="load model in 8bit mode, which will reduce memory and speed up inference.")
     parser.add_argument("--gptq", action="store_true", help="If given, we're evaluating a 4-bit quantized GPTQ model.")
@@ -281,7 +281,7 @@ if __name__ == "__main__":
                 load_in_half=True,
                 gptq_model=args.gptq
             )
-    save_directory = '/home/ubuntu/lumos/results/lumos_unified_rl_iterative/train/2024/01/20/1927/step_1'
+    save_directory = '/home/ubuntu/lumos/results/lumos_maths_rl_iterative/train/step_6'
     load_context = CQLModelForCausalLM.prepare_load_context(args=args, save_directory=save_directory)
     ground_model = CQLModelForCausalLM(**load_context)
     ground_model.from_pretrained(args=args, save_directory=save_directory)

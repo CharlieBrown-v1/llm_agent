@@ -549,16 +549,35 @@ class CQLModelForCausalLM(nn.Module):
         return output_ids_tensor
     
     def save_pretrained(self, save_directory: str, **save_kwargs):
+        rl_head_state_dict = save_kwargs.pop('rl_head_state_dict')
         self.pretrained_model.save_pretrained(save_directory, **save_kwargs)
         self.tokenizer.save_pretrained(save_directory)
 
+        log_alpha = rl_head_state_dict.pop('log_alpha.constant')
+        ivf_head_state_dict = {}
+        q_head_state_dict = {}
+        target_q_head_state_dict = {}
+        for key, value in rl_head_state_dict.items():
+            if key.startswith('ivf_head.'):
+                valid_key = key[len('ivf_head.'):]
+                ivf_head_state_dict[valid_key] = value
+            elif key.startswith('q_head.'):
+                valid_key = key[len('q_head.'):]
+                q_head_state_dict[valid_key] = value
+            elif key.startswith('target_q_head.'):
+                valid_key = key[len('target_q_head.'):]
+                target_q_head_state_dict[valid_key] = value
+            else:
+                raise NotImplementedError
         ivf_head_save_path = Path(save_directory).joinpath('ivf_head.pt')
-        torch.save(self.ivf_head.state_dict(), ivf_head_save_path)
+        torch.save(ivf_head_state_dict, ivf_head_save_path)
         q_head_save_path = Path(save_directory).joinpath('q_head.pt')
-        torch.save(self.q_head.state_dict(), q_head_save_path)
+        torch.save(q_head_state_dict, q_head_save_path)
         target_q_head_save_path = Path(save_directory).joinpath('target_q_head.pt')
-        torch.save(self.target_q_head.state_dict(), target_q_head_save_path)
+        torch.save(target_q_head_state_dict, target_q_head_save_path)
 
+        log_alpha_save_path = Path(save_directory).joinpath('log_alpha.pth')
+        torch.save(log_alpha, log_alpha_save_path)
         token_space_save_path = Path(save_directory).joinpath('token_space.pth')
         torch.save(self.token_space, token_space_save_path)
 
@@ -581,6 +600,10 @@ class CQLModelForCausalLM(nn.Module):
         self.q_head.load_state_dict(torch.load(q_head_save_path))
         target_q_head_save_path = Path(save_directory).joinpath('target_q_head.pt')
         self.target_q_head.load_state_dict(torch.load(target_q_head_save_path))
+
+        log_alpha_save_path = Path(save_directory).joinpath('log_alpha.pth')
+        log_alpha = torch.load(log_alpha_save_path)
+        self.log_alpha = Scalar(init_value=log_alpha.item(), dtype=self.tensor_dtype)
 
     @staticmethod
     def prepare_load_context(args, save_directory: str) -> dict:

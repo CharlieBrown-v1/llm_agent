@@ -44,7 +44,7 @@ from eval.utils import rl_generate_completions, generate_completions
 
 from eval.gsm.run_eval import execute as gsm_execute
 from eval.gsm.run_eval import rl_execute as gsm_rl_execute
-from eval.strategyqa.run_eval import rl_execute as complex_qa_execute
+# from eval.strategyqa.run_eval import rl_execute as complex_qa_execute
 from pytorch_memlab import MemReporter
 from pytorch_memlab.mem_reporter import Optional, LEN, readable_size
 
@@ -345,6 +345,7 @@ def parse_args():
     parser.add_argument("--task_name", type=str, default='maths', help="Task name", choices=['maths'])
 
     # Train utils
+    parser.add_argument("--frozen_attn", action="store_true", default=False, help="Debug Flag")
     parser.add_argument("--target_update_method", type=str, default='hard', help="Method of updating target net")
     # parser.add_argument("--target_update_method", type=str, default='soft', help="Method of updating target net")
     
@@ -357,11 +358,11 @@ def parse_args():
     parser.add_argument("--use_lagrange", action="store_true", default=False, help="Debug Flag")
     parser.add_argument("--num_network", type=int, default=2, help="Multiple Q Trick")
     parser.add_argument("--seed", type=int, default=47, help="A seed for reproducible training.")
-    parser.add_argument("--model_name_or_path", type=str, default='/home/ubuntu/yangsihang/llm_ref/.cache/hub/models--ai2lumos--lumos_unified_ground_iterative/snapshots/8adc9ac410a17d2dcf12f8514ec345e59ad86467', help="Path to pretrained model or model identifier from huggingface.co/models.", required=False)
+    parser.add_argument("--model_name_or_path", type=str, default='/home/ubuntu/lumos/.cache/hub/models--ai2lumos--lumos_maths_ground_iterative/snapshots/edd152df62ff0c1f4e6297ed83fc7ade62bf6c80', help="Path to pretrained model or model identifier from huggingface.co/models.", required=False)
     parser.add_argument("--use_flash_attn", action="store_true", default=False, help="If passed, will use flash attention to train the model.")
     parser.add_argument("--tokenizer_name", type=str, default=None, help="Pretrained tokenizer name or path if not the same as model_name")
     parser.add_argument("--use_slow_tokenizer", action="store_false", default=True, help="If passed, will use flash attention to train the model.")
-    parser.add_argument("--train_file", type=str, default=str(lumos_dir.joinpath(f'data/train/unified/lumos_unified_ground_iterative.jsonl')), help="A csv or a json file containing the training data.")
+    parser.add_argument("--train_file", type=str, default=str(lumos_dir.joinpath(f'data/train/maths/lumos_maths_ground_iterative.jsonl')), help="A csv or a json file containing the training data.")
     parser.add_argument("--max_seq_length", type=int, default=2048, help="The maximum total sequence length (prompt+completion) of each training example.")
     parser.add_argument("--preprocessing_num_workers", type=int, default=16, help="The number of processes to use for the preprocessing.")
 
@@ -375,7 +376,7 @@ def parse_args():
     parser.add_argument("--warmup_ratio", type=float, default=0.03, help="Ratio of total training steps used for warmup.")
     parser.add_argument("--weight_decay", type=float, default=0.0, help="Weight decay to use.")
     parser.add_argument("--num_train_epochs", type=int, default=2, help="Total number of training epochs to perform.")
-    parser.add_argument("--output_dir", type=str, default=str(lumos_dir.joinpath('results/lumos_unified_rl_iterative')), help="Where to store the final model.")
+    parser.add_argument("--output_dir", type=str, default=str(lumos_dir.joinpath('results/lumos_maths_rl_iterative')), help="Where to store the final model.")
     parser.add_argument("--with_tracking", action="store_true", default=False, help="Whether to enable experiment trackers for logging.")
     parser.add_argument("--report_to", type=str, default="tensorboard")
     parser.add_argument("--logging_steps", type=int, default=1, help="Log the training loss and learning rate every logging_steps steps.")
@@ -497,6 +498,28 @@ def save_with_accelerate(accelerator, model, tokenizer, output_dir, args):
         )
 
 
+def rl_save_with_accelerate(accelerator, model, tokenizer, output_dir, args):
+    # GPU behavior must be consistent!
+    state_dict = accelerator.get_state_dict(model)
+    unwrapped_model = accelerator.unwrap_model(model)
+
+    if accelerator.is_main_process:
+        pretrained_model_prefix = 'pretrained_model.'
+        rl_head_keys = [key for key in state_dict.keys() if not key.startswith(pretrained_model_prefix)]
+        rl_head_state_dict = {
+            key: state_dict.pop(key) for key in rl_head_keys
+        }
+        state_dict = {
+            key[len(pretrained_model_prefix):]: value for key, value in state_dict.items()
+        }
+        if args.use_lora:
+            raise NotImplementedError
+        else:
+            unwrapped_model.save_pretrained(
+                output_dir, is_main_process=accelerator.is_main_process, save_function=accelerator.save, state_dict=state_dict, rl_head_state_dict=rl_head_state_dict,
+            )
+
+
 def wrap_dataset_vf(args: argparse.Namespace, dataset: datasets.Dataset, task_name: str, task_ids: list, tokenizer: AutoTokenizer, max_seq_length: int) -> dict:
     max_tau_length = 900  # Skip taus which are too long
 
@@ -510,10 +533,10 @@ def wrap_dataset_vf(args: argparse.Namespace, dataset: datasets.Dataset, task_na
     total_valid_flags_list = []
     wrap_tqdm = tqdm(range(len(dataset)))
 
-    debug_start_idx = 20000
+    debug_start_idx = 10000
     if args.debug or 'gpt2' in args.model_name_or_path:
         wrap_tqdm = tqdm(range(debug_start_idx, debug_start_idx + 100))
-    wrap_tqdm = tqdm(range(debug_start_idx, debug_start_idx + 1))
+    wrap_tqdm = tqdm(range(debug_start_idx, debug_start_idx + 100))
 
     wrap_tqdm.set_description("Wrapping dataset to RL format")
     for data_idx in wrap_tqdm:
@@ -617,7 +640,7 @@ def wrap_dataset_vf(args: argparse.Namespace, dataset: datasets.Dataset, task_na
         'task_ids': total_task_id_list,
     }
 
-    tmp_data_dict = {
+    ivf_data_dict = {
         'input_ids': [],
         'states_user': [],
         'states_agent': [],
@@ -631,24 +654,24 @@ def wrap_dataset_vf(args: argparse.Namespace, dataset: datasets.Dataset, task_na
     total_steps = len(total_action_ids_list)
     for step in range(total_steps):
         if total_valid_flags_list[step] == 1:
-            tmp_data_dict['input_ids'].append(total_action_ids_list[step])
-            tmp_data_dict['states_user'].append(total_state_user_ids_list[step])
-            tmp_data_dict['states_agent'].append(total_state_agent_ids_list[step])
-            tmp_data_dict['actions'].append(total_action_ids_list[step])
-            tmp_data_dict['next_states'].append(total_next_state_ids_list[step])
-            tmp_data_dict['rewards'].append(total_rewards_list[step])
-            tmp_data_dict['dones'].append(total_dones_list[step])
-            tmp_data_dict['valid_flags'].append(total_valid_flags_list[step])
-            tmp_data_dict['task_ids'].append(total_task_id_list[step])
+            ivf_data_dict['input_ids'].append(total_action_ids_list[step])
+            ivf_data_dict['states_user'].append(total_state_user_ids_list[step])
+            ivf_data_dict['states_agent'].append(total_state_agent_ids_list[step])
+            ivf_data_dict['actions'].append(total_action_ids_list[step])
+            ivf_data_dict['next_states'].append(total_next_state_ids_list[step])
+            ivf_data_dict['rewards'].append(total_rewards_list[step])
+            ivf_data_dict['dones'].append(total_dones_list[step])
+            ivf_data_dict['valid_flags'].append(total_valid_flags_list[step])
+            ivf_data_dict['task_ids'].append(total_task_id_list[step])
     
-    # data_dict = tmp_data_dict  # test valid flag module
-
     wrapped_dataset = datasets.Dataset.from_dict(data_dict)
     token_space = torch.unique(torch.as_tensor(total_action_ids_list))
+    wrapped_dataset_for_ivf = datasets.Dataset.from_dict(ivf_data_dict)
 
     wrap_result = {
         'wrapped_dataset': wrapped_dataset,
         'token_space': token_space,
+        'wrapped_dataset_for_ivf': wrapped_dataset_for_ivf,
     }
 
     return wrap_result
@@ -818,7 +841,7 @@ def main():
         args.low_cpu_mem_usage = True  # Used by device_map = 'auto'
         args.target_update_interval = 1  # check whether target update works
         args.with_tracking = True  # check whether logger module works
-        args.model_name_or_path = '/home/ubuntu/yangsihang/llm_ref/.cache/models--gpt2/snapshots/11c5a3d5811f50298f278a704980280950aedb10'
+        args.frozen_attn = True
         args.output_dir = str(Path(args.output_dir).joinpath('debug'))
     # Train config
     else:
@@ -1042,6 +1065,7 @@ def main():
     task_ids = raw_datasets['train']['id']
     wrap_result = wrap_dataset_vf(args=args, dataset=train_dataset, task_name=args.task_name, task_ids=task_ids, tokenizer=tokenizer, max_seq_length=args.max_seq_length)
     rl_train_dataset = wrap_result['wrapped_dataset']
+    rl_train_dataset_for_ivf = wrap_result['wrapped_dataset_for_ivf']
     token_space = wrap_result['token_space']
 
     # Log a few random samples from the training set:
@@ -1070,6 +1094,7 @@ def main():
         'alpha_multiplier': 1.0,
     }
     policy_optim_kwargs = {
+        'frozen_attn': args.frozen_attn,
     }
     value_optim_kwargs = {
         'gamma': 0.99,
@@ -1157,15 +1182,6 @@ def main():
     model, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
         model, optimizer, train_dataloader, lr_scheduler
     )
-    # accelerator.state.deepspeed_plugin.deepspeed_config['train_micro_batch_size_per_gpu'] = args.per_device_train_batch_size
-    # model, optimizer, lr_scheduler = accelerator.prepare(
-        # model, optimizer, lr_scheduler
-    # )
-
-    output_filename = cuda_usage_dir.joinpath(f"Desc={model_name.upper()}&Stage=Prepare.txt")
-    redirect_output_to_file(reporter.report, output_filename)
-
-
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
@@ -1351,7 +1367,7 @@ def main():
                         output_dir = f"step_{completed_steps}"
                         if args.output_dir is not None:
                             output_dir = os.path.join(args.output_dir, output_dir)
-                        save_with_accelerate(accelerator, model, tokenizer, output_dir, args)
+                        rl_save_with_accelerate(accelerator, model, tokenizer, output_dir, args)
 
                 if completed_steps >= args.max_train_steps:
                     break
@@ -1366,16 +1382,14 @@ def main():
             output_dir = f"epoch_{epoch}"
             if args.output_dir is not None:
                 output_dir = os.path.join(args.output_dir, output_dir)
-            save_with_accelerate(accelerator, model, tokenizer, output_dir, args)
+            rl_save_with_accelerate(accelerator, model, tokenizer, output_dir, args)
 
     if args.with_tracking:
         accelerator.end_training()
 
     if args.output_dir is not None:
         accelerator.wait_for_everyone()
-        if accelerator.is_main_process:
-            tokenizer.save_pretrained(args.output_dir)
-        save_with_accelerate(accelerator, model, tokenizer, args.output_dir, args)
+        rl_save_with_accelerate(accelerator, model, tokenizer, args.output_dir, args)
 
 
 if __name__ == "__main__":
