@@ -1129,6 +1129,12 @@ def main():
         collate_fn=DataCollatorForSeqRLVF(tokenizer=tokenizer, model=model.pretrained_model, padding="longest"),
         batch_size=args.per_device_train_batch_size,
     )
+    train_dataloader_for_ivf = DataLoader(
+        rl_train_dataset_for_ivf,
+        shuffle=True, 
+        collate_fn=DataCollatorForSeqRLVF(tokenizer=tokenizer, model=model.pretrained_model, padding="longest"),
+        batch_size=args.per_device_train_batch_size,
+    )
 
     # Optimizer
     # Split weights in two groups, one with weight decay and the other not.
@@ -1182,6 +1188,7 @@ def main():
     model, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
         model, optimizer, train_dataloader, lr_scheduler
     )
+    train_dataloader_for_ivf = accelerator.prepare(train_dataloader_for_ivf)
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
@@ -1270,31 +1277,39 @@ def main():
     log_info_queue = queue.Queue(maxsize=200)
     for epoch in range(starting_epoch, args.num_train_epochs):
         total_loss = 0
-        if (
-            args.resume_from_checkpoint
-            and epoch == starting_epoch
-            and resume_step is not None
-        ):
-            # We skip the first `n` batches in the dataloader when resuming from a checkpoint
-            active_dataloader = accelerator.skip_first_batches(
-                train_dataloader, resume_step
-            )
-        else:
-            active_dataloader = train_dataloader
+        active_dataloader_for_ivf = train_dataloader_for_ivf
+        # prepare ivf context
+        for step, batch_dict in enumerate(active_dataloader_for_ivf):
+            compute_vf = batch_dict['valid_flags'] == 1
+            rl_forward_result = accelerator.unwrap_model(model).rl_forward_with_ivf(batch_dict=batch_dict,
+                                                               compute_vf=compute_vf,
+                                                               task_ids=task_ids,
+                                                               gsm_step=gsm_step,
+                                                               use_distributed=accelerator.use_distributed,
+                                                               max_seq_length=args.max_seq_length,
+                                                               )
         
-        is_vf_called_list = []
+        updated_rl_train_dataset = {}
+        active_dataloader = DataLoader(
+            updated_rl_train_dataset,
+            shuffle=True, 
+            collate_fn=DataCollatorForSeqRLVF(tokenizer=tokenizer, model=model.pretrained_model, padding="longest"),
+            batch_size=args.per_device_train_batch_size,
+        )
+        active_dataloader = accelerator.prepare(active_dataloader)
         for step, batch_dict in enumerate(active_dataloader):
             accumulated_steps += 1
             with accelerator.accumulate(model):
-                compute_vf = batch_dict['valid_flags'] == 1
-                is_vf_called_list.append(compute_vf)
                 reporter = CustomMemReporter(model)
+                # rl_forward_result = accelerator.unwrap_model(model).rl_forward(batch_dict=batch_dict,
+                #                                                                compute_vf=compute_vf,
+                #                                                                task_ids=task_ids,
+                #                                                                gsm_step=gsm_step,
+                #                                                                use_distributed=accelerator.use_distributed,
+                #                                                                max_seq_length=args.max_seq_length,
+                #                                                                )
                 rl_forward_result = accelerator.unwrap_model(model).rl_forward(batch_dict=batch_dict,
-                                                                               compute_vf=compute_vf,
-                                                                               task_ids=task_ids,
-                                                                               gsm_step=gsm_step,
                                                                                use_distributed=accelerator.use_distributed,
-                                                                               max_seq_length=args.max_seq_length,
                                                                                )
                 loss = rl_forward_result['loss']
                 log_info_queue.put(rl_forward_result['log_info'])
