@@ -751,7 +751,7 @@ def gsm_step(states_user: torch.LongTensor, tokenizer: AutoTokenizer, actions: s
     inter_operation_str_list = [operation_str_with_user_prompt[:operation_str_with_user_prompt.find(tokenizer.eos_token)] for operation_str_with_user_prompt in inter_operation_str_with_user_prompt_list]
     for operation_str in inter_operation_str_list:
         for k, op_action in enumerate(operation_str.strip().split('; ')):
-            results_variable, execution_results = gsm_execute(op_action.strip(), inter_results)
+            results_variable, execution_results = gsm_rl_execute(op_action.strip(), inter_results)
             if results_variable is None and execution_results is None:
                 step_result['valid_flag'] = 0
                 return step_result
@@ -766,7 +766,7 @@ def gsm_step(states_user: torch.LongTensor, tokenizer: AutoTokenizer, actions: s
 
     for k, action in enumerate(actions.strip().split('; ')):
         try:
-            results_variable, execution_results = gsm_execute(action.strip(), inter_results)
+            results_variable, execution_results = gsm_rl_execute(action.strip(), inter_results)
             if execution_results:
                 if isinstance(results_variable, str):
                     inter_results[results_variable] = execution_results
