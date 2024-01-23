@@ -132,14 +132,16 @@ class DataCollatorForSeqRLVF(DataCollatorForSeq2Seq):
             return_tensors = self.return_tensors
         states_user = [feature["states_user"] for feature in features] if "states_user" in features[0].keys() else None
         states_agent = [feature["states_agent"] for feature in features] if "states_agent" in features[0].keys() else None
+        pi_actions = [feature["pi_actions"] for feature in features] if "pi_actions" in features[0].keys() else None
         actions = [feature["actions"] for feature in features] if "actions" in features[0].keys() else None
         next_states = [feature["next_states"] for feature in features] if "next_states" in features[0].keys() else None
         rewards = [feature["rewards"] for feature in features] if "rewards" in features[0].keys() else None
 
-        assert states_user is not None and states_agent is not None and actions is not None and next_states is not None and rewards is not None, "Need to have states_user, states_agent, actions, next_states and rewards in features."
+        assert states_user is not None and states_agent is not None and pi_actions is not None and actions is not None and next_states is not None and rewards is not None, "Need to have states_user, states_agent, pi_actions, actions, next_states and rewards in features."
 
         max_state_user_length = max(len(l) for l in states_user)
         max_state_agent_length = max(len(l) for l in states_agent)
+        max_pi_action_length = max(len(l) for l in pi_actions)
         max_next_state_length = max(len(l) for l in next_states)
 
         if self.pad_to_multiple_of is not None:
@@ -153,6 +155,11 @@ class DataCollatorForSeqRLVF(DataCollatorForSeq2Seq):
                 // self.pad_to_multiple_of
                 * self.pad_to_multiple_of
             )
+            max_pi_action_length = (
+                (max_pi_action_length + self.pad_to_multiple_of - 1)
+                // self.pad_to_multiple_of
+                * self.pad_to_multiple_of
+            )
             max_next_state_length = (
                 (max_next_state_length + self.pad_to_multiple_of - 1)
                 // self.pad_to_multiple_of
@@ -163,6 +170,7 @@ class DataCollatorForSeqRLVF(DataCollatorForSeq2Seq):
         for feature in features:
             state_user_remainder = [self.tokenizer.pad_token_id] * (max_state_user_length - len(feature["states_user"]))
             state_agent_remainder = [self.tokenizer.pad_token_id] * (max_state_agent_length - len(feature["states_agent"]))
+            pi_action_remainder = [self.tokenizer.pad_token_id] * (max_pi_action_length - len(feature["pi_actions"]))
             next_state_remainder = [self.tokenizer.pad_token_id] * (max_next_state_length - len(feature["next_states"]))
             if isinstance(feature["states_user"], list):
                 feature["states_user"] = (
@@ -171,16 +179,21 @@ class DataCollatorForSeqRLVF(DataCollatorForSeq2Seq):
                 feature["states_agent"] = (
                     feature["states_agent"] + state_agent_remainder if padding_side == "right" else state_agent_remainder + feature["states_agent"]
                 )
+                feature["pi_actions"] = (
+                    feature["pi_actions"] + pi_action_remainder if padding_side == "right" else pi_action_remainder + feature["pi_actions"]
+                )
                 feature["next_states"] = (
                     feature["next_states"] + next_state_remainder if padding_side == "right" else next_state_remainder + feature["next_states"]
                 )
             elif padding_side == "right":
                 feature["states_user"] = np.concatenate([feature["states_user"], state_user_remainder]).astype(np.int64)
                 feature["states_agent"] = np.concatenate([feature["states_agent"], state_agent_remainder]).astype(np.int64)
+                feature["pi_actions"] = np.concatenate([feature["pi_actions"], pi_action_remainder]).astype(np.int64)
                 feature["next_states"] = np.concatenate([feature["next_states"], next_state_remainder]).astype(np.int64)
             else:
                 feature["states_user"] = np.concatenate([state_user_remainder, feature["states_user"]]).astype(np.int64)
                 feature["states_agent"] = np.concatenate([state_agent_remainder, feature["states_agent"]]).astype(np.int64)
+                feature["pi_actions"] = np.concatenate([pi_action_remainder, feature["pi_actions"]]).astype(np.int64)
                 feature["next_states"] = np.concatenate([next_state_remainder, feature["next_states"]]).astype(np.int64)
 
         features = self.tokenizer.pad(
@@ -351,8 +364,8 @@ def parse_args():
     
     parser.add_argument("--target_update_interval", type=int, default=128 * 10, help="Update target net every target_update_interval minibatches")
 
-    # parser.add_argument("--checkpointing_steps", type=str, default='1', help="Whether the various states should be saved at the end of every n steps, or 'epoch' for each epoch.")  # Same value as target_update_interval
-    parser.add_argument("--checkpointing_steps", type=str, default='epoch', help="Whether the various states should be saved at the end of every n steps, or 'epoch' for each epoch.")  # Same value as target_update_interval
+    parser.add_argument("--checkpointing_steps", type=str, default='10', help="Whether the various states should be saved at the end of every n steps, or 'epoch' for each epoch.")  # Same value as target_update_interval
+    # parser.add_argument("--checkpointing_steps", type=str, default='epoch', help="Whether the various states should be saved at the end of every n steps, or 'epoch' for each epoch.")  # Same value as target_update_interval
 
     # CQL Model
     parser.add_argument("--use_lagrange", action="store_true", default=False, help="Debug Flag")
@@ -531,12 +544,14 @@ def wrap_dataset_vf(args: argparse.Namespace, dataset: datasets.Dataset, task_na
     total_rewards_list = []
     total_dones_list = []
     total_valid_flags_list = []
+    total_pi_actions_list = []
+    total_invalid_flags_list = []
     wrap_tqdm = tqdm(range(len(dataset)))
 
-    debug_start_idx = 10000
-    if args.debug or 'gpt2' in args.model_name_or_path:
-        wrap_tqdm = tqdm(range(debug_start_idx, debug_start_idx + 100))
-    wrap_tqdm = tqdm(range(debug_start_idx, debug_start_idx + 100))
+    # debug_start_idx = 10000
+    # if args.debug or 'gpt2' in args.model_name_or_path:
+        # wrap_tqdm = tqdm(range(debug_start_idx, debug_start_idx + 100))
+    # wrap_tqdm = tqdm(range(debug_start_idx, debug_start_idx + 3))
 
     wrap_tqdm.set_description("Wrapping dataset to RL format")
     for data_idx in wrap_tqdm:
@@ -626,6 +641,8 @@ def wrap_dataset_vf(args: argparse.Namespace, dataset: datasets.Dataset, task_na
         total_rewards_list.extend([0] * (len(tau_next_state_ids_list) - 1) + [1])
         total_dones_list.extend([0] * (len(tau_next_state_ids_list) - 1) + [1])
         total_valid_flags_list.extend(tau_valid_flags_list)
+        total_pi_actions_list.extend(tau_state_agent_ids_list)
+        total_invalid_flags_list.extend(tau_valid_flags_list)
 
     data_dict = {
         'input_ids': total_action_ids_list,  # Needed by DataCollator
@@ -637,6 +654,8 @@ def wrap_dataset_vf(args: argparse.Namespace, dataset: datasets.Dataset, task_na
         'rewards': total_rewards_list,
         'dones': total_dones_list,
         'valid_flags': total_valid_flags_list,
+        'pi_actions': total_pi_actions_list,
+        'invalid_flags': total_invalid_flags_list,
         'task_ids': total_task_id_list,
     }
 
@@ -649,7 +668,10 @@ def wrap_dataset_vf(args: argparse.Namespace, dataset: datasets.Dataset, task_na
         'rewards': [],
         'dones': [],
         'valid_flags': [],
+        'pi_actions': [],
+        'invalid_flags': [],
         'task_ids': [],
+        'original_indexes': [],
     }
     total_steps = len(total_action_ids_list)
     for step in range(total_steps):
@@ -662,7 +684,10 @@ def wrap_dataset_vf(args: argparse.Namespace, dataset: datasets.Dataset, task_na
             ivf_data_dict['rewards'].append(total_rewards_list[step])
             ivf_data_dict['dones'].append(total_dones_list[step])
             ivf_data_dict['valid_flags'].append(total_valid_flags_list[step])
+            ivf_data_dict['pi_actions'].append(total_state_agent_ids_list[step])
+            ivf_data_dict['invalid_flags'].append(total_invalid_flags_list[step])
             ivf_data_dict['task_ids'].append(total_task_id_list[step])
+            ivf_data_dict['original_indexes'].append(step)
     
     wrapped_dataset = datasets.Dataset.from_dict(data_dict)
     token_space = torch.unique(torch.as_tensor(total_action_ids_list))
@@ -713,20 +738,20 @@ def is_iterable(obj):
 
 
 # Fine grained
-def gsm_step(batch_dict: dict, tokenizer: AutoTokenizer, actions: str) -> dict:
+def gsm_step(states_user: torch.LongTensor, tokenizer: AutoTokenizer, actions: str) -> dict:
     step_result = {
         'valid_flag': 1,
     }
 
     inter_results = {}
     assistant_block_str = '\n<|assistant|>\n'
-    block_list = tokenizer.decode(batch_dict['states_user'][0]).split(assistant_block_str)
+    block_list = tokenizer.decode(states_user).split(assistant_block_str)
     # 0 for task description, -1 for current action
     inter_operation_str_with_user_prompt_list = block_list[1: -1]
     inter_operation_str_list = [operation_str_with_user_prompt[:operation_str_with_user_prompt.find(tokenizer.eos_token)] for operation_str_with_user_prompt in inter_operation_str_with_user_prompt_list]
     for operation_str in inter_operation_str_list:
         for k, op_action in enumerate(operation_str.strip().split('; ')):
-            results_variable, execution_results = gsm_rl_execute(op_action.strip(), inter_results)
+            results_variable, execution_results = gsm_execute(op_action.strip(), inter_results)
             if results_variable is None and execution_results is None:
                 step_result['valid_flag'] = 0
                 return step_result
@@ -1279,17 +1304,29 @@ def main():
         total_loss = 0
         active_dataloader_for_ivf = train_dataloader_for_ivf
         # prepare ivf context
+        model.eval()
+        ivf_context = {
+            'pi_actions': [],
+            'invalid_flags': [],
+            'original_indexes': [],
+        }
         for step, batch_dict in enumerate(active_dataloader_for_ivf):
-            compute_vf = batch_dict['valid_flags'] == 1
-            rl_forward_result = accelerator.unwrap_model(model).rl_forward_with_ivf(batch_dict=batch_dict,
-                                                               compute_vf=compute_vf,
+            batch_ivf_context = accelerator.unwrap_model(model).compute_ivf_context(batch_dict=batch_dict,
                                                                task_ids=task_ids,
                                                                gsm_step=gsm_step,
-                                                               use_distributed=accelerator.use_distributed,
                                                                max_seq_length=args.max_seq_length,
                                                                )
+            ivf_context['pi_actions'].extend(batch_ivf_context['pi_actions'].tolist())
+            ivf_context['invalid_flags'].extend(batch_ivf_context['invalid_flags'].tolist())
+            ivf_context['original_indexes'].extend(batch_ivf_context['original_indexes'].tolist())
+
+        model.train()
         
-        updated_rl_train_dataset = {}
+        updated_rl_train_data_dict = rl_train_dataset.to_dict().copy()
+        for ivf_data_idx, data_idx in enumerate(ivf_context['original_indexes']):
+            updated_rl_train_data_dict['pi_actions'][data_idx] = ivf_context['pi_actions'][ivf_data_idx]
+            updated_rl_train_data_dict['invalid_flags'][data_idx] = ivf_context['invalid_flags'][ivf_data_idx]
+        updated_rl_train_dataset = datasets.Dataset.from_dict(updated_rl_train_data_dict)
         active_dataloader = DataLoader(
             updated_rl_train_dataset,
             shuffle=True, 
@@ -1301,13 +1338,6 @@ def main():
             accumulated_steps += 1
             with accelerator.accumulate(model):
                 reporter = CustomMemReporter(model)
-                # rl_forward_result = accelerator.unwrap_model(model).rl_forward(batch_dict=batch_dict,
-                #                                                                compute_vf=compute_vf,
-                #                                                                task_ids=task_ids,
-                #                                                                gsm_step=gsm_step,
-                #                                                                use_distributed=accelerator.use_distributed,
-                #                                                                max_seq_length=args.max_seq_length,
-                #                                                                )
                 rl_forward_result = accelerator.unwrap_model(model).rl_forward(batch_dict=batch_dict,
                                                                                use_distributed=accelerator.use_distributed,
                                                                                )

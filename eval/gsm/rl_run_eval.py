@@ -250,6 +250,7 @@ if __name__ == "__main__":
     # parser.add_argument("--gptq", action="store_true", help="If given, we're evaluating a 4-bit quantized GPTQ model.")
 
     parser.add_argument("--debug", action="store_true", help="debug flag")
+    parser.add_argument("--frozen_attn", action="store_true", help="frozen attn flag")
     parser.add_argument("--low_cpu_mem_usage", action="store_true", default=False, help=("It is an option to create the model as an empty shell, then only materialize its parameters when the pretrained weights are loaded. If passed, LLM loading time and RAM consumption will be benefited."))
     parser.add_argument("--use_flash_attn", action="store_true", default=False, help="If passed, will use flash attention to train the model.")
     parser.add_argument("--use_slow_tokenizer", action="store_false", default=True, help="If passed, will use flash attention to train the model.")
@@ -274,6 +275,7 @@ if __name__ == "__main__":
         args.use_slow_tokenizer = True
 
     plan_model_path = '/home/ubuntu/lumos/.cache/hub/models--ai2lumos--lumos_maths_plan_iterative/snapshots/232661635c70cd18d1cd0c3acad7ea9325e435bf'
+    plan_model_path = '/home/ubuntu/lumos/.cache/hub/models--ai2lumos--lumos_maths_ground_iterative/snapshots/edd152df62ff0c1f4e6297ed83fc7ade62bf6c80'
     plan_model, plan_tokenizer = load_hf_lm_and_tokenizer(
                 model_name_or_path=plan_model_path, 
                 tokenizer_name_or_path=plan_model_path, 
@@ -281,7 +283,7 @@ if __name__ == "__main__":
                 load_in_half=True,
                 gptq_model=args.gptq
             )
-    save_directory = '/home/ubuntu/lumos/results/lumos_maths_rl_iterative/train/step_6'
+    save_directory = '/home/ubuntu/lumos/results/lumos_maths_rl_iterative/train/epoch_1'
     load_context = CQLModelForCausalLM.prepare_load_context(args=args, save_directory=save_directory)
     ground_model = CQLModelForCausalLM(**load_context)
     ground_model.from_pretrained(args=args, save_directory=save_directory)

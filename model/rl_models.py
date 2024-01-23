@@ -309,7 +309,7 @@ class CQLModelForCausalLM(nn.Module):
         batch_size = batch_dict['actions'].shape[0]
         pi_actions = batch_dict['pi_actions']
         invalid_flags = batch_dict['invalid_flags']
-        compute_vf = batch_dict['compute_vf']
+        compute_vf = batch_dict['valid_flags']  # The two has the same meaning
 
         states_inputs = dict(
             input_ids = torch.cat([batch_dict['states_user'], batch_dict['states_agent']], dim=1),
@@ -360,6 +360,7 @@ class CQLModelForCausalLM(nn.Module):
         if not use_distributed:
             self.ivf_head.to(ivf_head_input_on_states.device)
 
+
         ivf_info = self.compute_ivf_info(ivf_head_input_on_states=ivf_head_input_on_states)
 
         # Using token_space to mask out invalid actions
@@ -450,16 +451,11 @@ class CQLModelForCausalLM(nn.Module):
 
         return forward_result
 
-    def rl_forward_with_ivf(self,
+    def compute_ivf_context(self,
                 batch_dict: dict,
                 **kwargs,
                 ) -> dict:
-        compute_vf = kwargs['compute_vf']
-        use_distributed = kwargs['use_distributed']
         batch_size = batch_dict['actions'].shape[0]
-
-        self.eval()
-
         max_pi_actions_length = batch_dict['states_agent'].shape[1]
         pi_actions_dict = {}
         invalid_flags = batch_dict['valid_flags'].clone()
@@ -492,18 +488,17 @@ class CQLModelForCausalLM(nn.Module):
                     end_idx = min(end_idx, new_token_idx + 1)
 
             actions_tensor = torch.as_tensor(ivf_action_list)[:end_idx]
-            actions = self.tokenizer.decode(actions_tensor)
+            actions = self.tokenizer.decode(actions_tensor, skip_special_tokens=True)
             task_type = '_'.join(task_ids[batch_dict['task_ids'][batch_idx]].split('_')[:-1])
             if task_type == 'maths':
-                step_result = gsm_step(batch_dict, self.tokenizer, actions)
+                step_result = gsm_step(states_user=batch_dict['states_user'][batch_idx], tokenizer=self.tokenizer, actions=actions)
             else:
                 raise NotImplementedError
 
             pi_valid_flag = int(step_result['valid_flag'])
-            if compute_vf[batch_idx]:
-                max_pi_actions_length = max(max_pi_actions_length, actions_tensor.shape[0])
-                pi_actions_dict[batch_idx] = actions_tensor.to(batch_dict['states_agent'].device)
-                invalid_flags[batch_idx] = 1 - torch.as_tensor(pi_valid_flag).to(batch_dict['valid_flags'].device)
+            max_pi_actions_length = max(max_pi_actions_length, actions_tensor.shape[0])
+            pi_actions_dict[batch_idx] = actions_tensor.to(batch_dict['states_agent'].device)
+            invalid_flags[batch_idx] = 1 - torch.as_tensor(pi_valid_flag).to(batch_dict['valid_flags'].device)
         
         pi_actions = torch.ones((batch_size, max_pi_actions_length), dtype=torch.long) * self.tokenizer.pad_token_id
         for batch_idx in range(batch_size):
@@ -513,146 +508,13 @@ class CQLModelForCausalLM(nn.Module):
 
             pi_actions[batch_idx][:actions.shape[0]] = actions
 
-        self.train()
-
-        states_inputs = dict(
-            input_ids = torch.cat([batch_dict['states_user'], batch_dict['states_agent']], dim=1),
-        )
-        states_outputs = self.pretrained_model(**states_inputs, use_cache=False, output_hidden_states=True)
-        states_last_hidden_state = states_outputs.hidden_states[-1]
-        next_states_inputs = dict(
-            input_ids = batch_dict['next_states'],
-        )
-        next_states_outputs = self.pretrained_model(**next_states_inputs, use_cache=False, output_hidden_states=True)
-        next_states_last_hidden_state = next_states_outputs.hidden_states[-1]
-        q_head_input_on_states = states_last_hidden_state[:, -1, :]
-        q_head_input_on_next_states = next_states_last_hidden_state[:, -1, :]
-        logits_on_states = states_outputs.logits[:, -1, :]
-        logits_on_next_states = next_states_outputs.logits[:, -1, :]
-
-        try:
-            ivf_inputs = dict(
-                input_ids = torch.cat([batch_dict['states_user'], pi_actions.to(batch_dict['states_user'].device)], dim=1),
-            )
-            ivf_head_input_on_states = self.pretrained_model(**ivf_inputs, use_cache=False, output_hidden_states=True).hidden_states[-1][:, -1, :]
-        except RuntimeError as e:
-            error_hint_list = [
-                f'=' * 64,
-                f'Error msg: {e}',
-                f'Error states_user dtype: {batch_dict["states_user"].dtype}',
-                f'Error states_user: {batch_dict["states_user"]}',
-                f'Error pi_actions dtype: {pi_actions.dtype}',
-                f'Error pi_actions: {pi_actions}',
-                f'=' * 64,
-            ]
-            error_hint_str = '\n'.join(error_hint_list)
-
-            original_stdout = sys.stdout
-            try:
-                with open(lumos_dir.joinpath('results/errors.txt'), 'a') as file:
-                    sys.stdout = file
-                    print(error_hint_str)
-            finally:
-                sys.stdout = original_stdout
-
-            ivf_inputs = dict(
-                input_ids = torch.cat([batch_dict['states_user'], pi_actions.to(batch_dict['states_user'].device)], dim=1).to(torch.long),
-            )
-            ivf_head_input_on_states = self.pretrained_model(**ivf_inputs, use_cache=False, output_hidden_states=True).hidden_states[-1][:, -1, :]
-
-        if not use_distributed:
-            self.ivf_head.to(ivf_head_input_on_states.device)
-
-        ivf_info = self.compute_ivf_info(ivf_head_input_on_states=ivf_head_input_on_states)
-
-        # Using token_space to mask out invalid actions
-        states_token_space_mask = torch.ones_like(logits_on_states, dtype=torch.bool)
-        next_states_token_space_mask = torch.ones_like(logits_on_next_states, dtype=torch.bool)
-        states_token_space_mask.scatter_(dim=1, index=self.token_space.unsqueeze(dim=0).repeat(batch_size, 1).to(logits_on_states.device), value=False)
-        next_states_token_space_mask.scatter_(dim=1, index=self.token_space.unsqueeze(dim=0).repeat(batch_size, 1).to(logits_on_next_states.device), value=False)
-        logits_on_states[states_token_space_mask] = -float('inf')
-        logits_on_next_states[next_states_token_space_mask] = -float('inf')
-
-        new_actions, log_probs = self.compute_action_and_log_probs_from_logits(logits=logits_on_states, deterministic=False)
-        ts_log_probs = log_probs[:, self.token_space]
-        new_next_actions, _ = self.compute_action_and_log_probs_from_logits(logits=logits_on_next_states, deterministic=False)
-
-        if not use_distributed:
-            self.q_head.to(q_head_input_on_states.device)
-            self.target_q_head.to(q_head_input_on_next_states.device)
-
-        q_table = self.q_head(q_head_input_on_states).min(dim=-1).values
-        next_q_table = self.target_q_head(q_head_input_on_next_states).min(dim=-1).values
-
-        sac_alpha_loss_result = self.compute_sac_alpha_loss(ts_log_probs=ts_log_probs)
-        sac_alpha = sac_alpha_loss_result['alpha']
-        sac_alpha_loss = sac_alpha_loss_result['loss']
-
-        critic_loss_result = self.compute_critic_loss(q_table=q_table, actions=batch_dict['actions'], new_next_actions=new_next_actions, next_q_table=next_q_table, rewards=batch_dict['rewards'], dones=batch_dict['dones'])
-        critic_loss = critic_loss_result['loss']
-        
-        ivf_rewards = ivf_info['ivf_rewards']
-        ivf_values = ivf_info['ivf_values']
-
-        actor_loss_result = self.compute_actor_loss(alpha=sac_alpha, ts_log_probs=ts_log_probs, q_table=q_table, ivf_rewards=ivf_rewards)
-        actor_loss = actor_loss_result['loss']
-
-        ivf_loss_result = self.compute_invalid_flag_loss(ivf_values=ivf_values, invalid_flags=invalid_flags)
-        ivf_loss = ivf_loss_result['loss']
-        loss = sac_alpha_loss + actor_loss + critic_loss + ivf_loss
-
-        T_loss_info = {
-            'loss': sac_alpha_loss.item(),
-            'T': sac_alpha.item(),
+        ivf_context = {
+            'pi_actions': pi_actions,
+            'invalid_flags': invalid_flags,
+            'original_indexes': batch_dict['original_indexes'],
         }
-        policy_Q = torch.gather(q_table, dim=1, index=new_actions).mean().item()
-        dataset_Q = torch.gather(q_table, dim=1, index=batch_dict['actions'].unsqueeze(dim=1)).mean().item()
-        actor_loss_info = {
-            'loss': actor_loss.item(),
-            'T': sac_alpha.item(),
-            'ivf_rewards': ivf_rewards.mean().item() if ivf_rewards is not None else 0.0,
-            'policy_Q': policy_Q,
-            'dataset_Q': dataset_Q,
-            'policy_log_probs': torch.gather(log_probs, dim=1, index=new_actions).mean().item(),
-            'dataset_log_probs': torch.gather(log_probs, dim=1, index=batch_dict['actions'].unsqueeze(dim=1)).mean().item(),
-        }
-        critic_loss_info = {
-            'loss': critic_loss.item(),
-            'td_loss': critic_loss_result['td_loss'].item(),
-            'conservative_loss': critic_loss_result['conservative_loss'].item(),
-            'cql_alpha': critic_loss_result['cql_alpha'],
 
-            # td_loss
-            'q_values': critic_loss_result['q_values'].mean().item(),
-            'target_q_values': critic_loss_result['target_q_values'].mean().item(),
-            # conservative_loss
-            'logsumexp': critic_loss_result['logsumexp'].mean().item(),
-            'dataset_q_values': critic_loss_result['dataset_q_values'].mean().item(),
-        }
-        ivf_loss_info = {
-            'loss': ivf_loss.item(),
-            'ivf_values': ivf_values.mean().item() if ivf_values is not None else 0.0,
-            'compute_ivf': compute_vf.to(self.tensor_dtype).mean().item(),
-        }
-        log_info = dict(
-            T_loss=sac_alpha_loss.item(),
-            actor_loss=actor_loss.item(),
-            critic_loss=critic_loss.item(),
-            ivf_loss=ivf_loss.item(),
-
-            T_loss_info=T_loss_info,
-            actor_loss_info=actor_loss_info,
-            critic_loss_info=critic_loss_info,
-            ivf_loss_info=ivf_loss_info,
-        )
-
-        forward_result = dict(
-            loss=loss,
-            log_info=log_info,
-        )
-
-        return forward_result
-
+        return ivf_context
 
     def generate(self,
                  input_ids: torch.Tensor,
