@@ -174,6 +174,13 @@ class CQLModelForCausalLM(nn.Module):
 
     def compute_action_and_log_probs_from_logits(self, logits: torch.Tensor, deterministic: bool = False) -> Tuple[torch.Tensor, torch.Tensor]:
         assert len(logits.shape) == 2, "logits should be a 2D tensor with shape = (B, V)!"
+
+        # Using token_space to mask out invalid actions
+        batch_size = logits.shape[0]
+        token_space_mask = torch.ones_like(logits, dtype=torch.bool)
+        token_space_mask.scatter_(dim=1, index=self.token_space.unsqueeze(dim=0).repeat(batch_size, 1).to(logits.device), value=False)
+        logits[token_space_mask] = -float('inf')
+
         action_dist = torch.distributions.Categorical(logits=logits)
         if deterministic:
             actions = action_dist.mode
@@ -362,15 +369,7 @@ class CQLModelForCausalLM(nn.Module):
 
 
         ivf_info = self.compute_ivf_info(ivf_head_input_on_states=ivf_head_input_on_states)
-
-        # Using token_space to mask out invalid actions
-        states_token_space_mask = torch.ones_like(logits_on_states, dtype=torch.bool)
-        next_states_token_space_mask = torch.ones_like(logits_on_next_states, dtype=torch.bool)
-        states_token_space_mask.scatter_(dim=1, index=self.token_space.unsqueeze(dim=0).repeat(batch_size, 1).to(logits_on_states.device), value=False)
-        next_states_token_space_mask.scatter_(dim=1, index=self.token_space.unsqueeze(dim=0).repeat(batch_size, 1).to(logits_on_next_states.device), value=False)
-        logits_on_states[states_token_space_mask] = -float('inf')
-        logits_on_next_states[next_states_token_space_mask] = -float('inf')
-
+        
         new_actions, log_probs = self.compute_action_and_log_probs_from_logits(logits=logits_on_states, deterministic=False)
         ts_log_probs = log_probs[:, self.token_space]
         new_next_actions, _ = self.compute_action_and_log_probs_from_logits(logits=logits_on_next_states, deterministic=False)
@@ -463,31 +462,27 @@ class CQLModelForCausalLM(nn.Module):
         stop_id_sequence = [new_line_token]
         task_ids = kwargs['task_ids']
         gsm_step = kwargs['gsm_step']
+
+        max_new_token_cnt = 32
+        max_new_token_cnt = min(kwargs['max_seq_length'] - batch_dict['states_user'].shape[1], max_new_token_cnt)
+        end_idx_list = [max_new_token_cnt for _ in range(batch_size)]
+        ivf_actions_list = []
+        ivf_input_ids = batch_dict['states_user']
+        for new_token_idx in range(max_new_token_cnt):
+            ivf_outputs = self.pretrained_model(input_ids=ivf_input_ids, use_cache=False)
+            new_action_logits = ivf_outputs.logits[:, -1, :]
+            ivf_actions, _ = self.compute_action_and_log_probs_from_logits(logits=new_action_logits, deterministic=True)
+            ivf_actions_list.append(ivf_actions.flatten())
+            ivf_input_ids = torch.cat([ivf_input_ids, ivf_actions], dim=-1)
+
+            # Can not break o.t. parallel runing gpus will hang
+            for batch_idx in range(batch_size):
+                if ivf_actions[batch_idx] == self.tokenizer.eos_token_id or ivf_input_ids[batch_idx][-len(stop_id_sequence):].tolist() == stop_id_sequence:
+                    end_idx_list[batch_idx] = min(end_idx_list[batch_idx], new_token_idx + 1)
+
+        ivf_actions_tensor = torch.stack(ivf_actions_list)
         for batch_idx in range(batch_size):
-            max_new_token_cnt = 256
-            max_new_token_cnt = 32
-            max_new_token_cnt = min(kwargs['max_seq_length'] - batch_dict['states_user'][batch_idx].shape[0], max_new_token_cnt)
-            end_idx = max_new_token_cnt
-            ivf_action_list = []
-            indices = (batch_dict['states_user'][batch_idx] == self.tokenizer.pad_token_id).nonzero()
-            # Without padding
-            if indices.numel() == 0:
-                ivf_input_ids = batch_dict['states_user'][batch_idx].unsqueeze(dim=0)
-            # With padding
-            else:
-                ivf_input_ids = batch_dict['states_user'][batch_idx, :indices[0]].unsqueeze(dim=0)
-            for new_token_idx in range(max_new_token_cnt):
-                ivf_outputs = self.pretrained_model(input_ids=ivf_input_ids, use_cache=False)
-                new_action_logits = ivf_outputs.logits[:, -1, :]
-                ivf_action, _ = self.compute_action_and_log_probs_from_logits(logits=new_action_logits, deterministic=True)
-                ivf_action_list.append(ivf_action.item())
-                ivf_input_ids = torch.cat([ivf_input_ids, ivf_action], dim=-1)
-
-                # Can not break o.t. parallel runing gpus will hang
-                if ivf_action.item() == self.tokenizer.eos_token_id or ivf_input_ids[-len(stop_id_sequence):].tolist() == stop_id_sequence:
-                    end_idx = min(end_idx, new_token_idx + 1)
-
-            actions_tensor = torch.as_tensor(ivf_action_list)[:end_idx]
+            actions_tensor = ivf_actions_tensor[:, batch_idx][:end_idx_list[batch_idx]]
             actions = self.tokenizer.decode(actions_tensor, skip_special_tokens=True)
             task_type = '_'.join(task_ids[batch_dict['task_ids'][batch_idx]].split('_')[:-1])
             if task_type == 'maths':
@@ -499,14 +494,18 @@ class CQLModelForCausalLM(nn.Module):
             max_pi_actions_length = max(max_pi_actions_length, actions_tensor.shape[0])
             pi_actions_dict[batch_idx] = actions_tensor.to(batch_dict['states_agent'].device)
             invalid_flags[batch_idx] = 1 - torch.as_tensor(pi_valid_flag).to(batch_dict['valid_flags'].device)
-        
+
+        padding_side = self.tokenizer.padding_side
         pi_actions = torch.ones((batch_size, max_pi_actions_length), dtype=torch.long) * self.tokenizer.pad_token_id
         for batch_idx in range(batch_size):
             actions = pi_actions_dict.get(batch_idx, None)
-            if actions is None:
-                actions = batch_dict['states_agent'][batch_idx]
-
-            pi_actions[batch_idx][:actions.shape[0]] = actions
+            assert actions is not None
+            if padding_side == 'left':
+                pi_actions[batch_idx][-actions.shape[0]:] = actions
+            elif padding_side == 'right':
+                pi_actions[batch_idx][:actions.shape[0]] = actions
+            else:
+                raise NotImplementedError
 
         ivf_context = {
             'pi_actions': pi_actions,
@@ -526,14 +525,10 @@ class CQLModelForCausalLM(nn.Module):
 
         outputs = self.pretrained_model(input_ids=input_ids, attention_mask=attention_mask, use_cache=False)
         logits = outputs.logits[:, -1, :]
-        states_token_space_mask = torch.ones_like(logits, dtype=torch.bool)
 
         token_space = self.token_space.clone()
         if stop_id_sequences[0][0] not in token_space:
             token_space = torch.cat([token_space, torch.as_tensor(stop_id_sequences[0])])
-
-        states_token_space_mask.scatter_(dim=1, index=token_space.unsqueeze(dim=0).to(logits.device), value=False)
-        logits[states_token_space_mask] = -float('inf')
 
         max_new_tokens = generation_kwargs['max_new_tokens']
         assert len(stop_id_sequences) == 1, "Only support one stop_id_sequences for now!"
@@ -556,7 +551,6 @@ class CQLModelForCausalLM(nn.Module):
             attention_mask = torch.cat([attention_mask, torch.ones_like(new_actions, dtype=torch.int64)], dim=-1)
             outputs = self.pretrained_model(input_ids=input_ids, attention_mask=attention_mask, use_cache=False)
             logits = outputs.logits[:, -1, :]
-            logits[states_token_space_mask] = -float('inf')
 
         return output_ids_tensor
     

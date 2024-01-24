@@ -275,7 +275,7 @@ if __name__ == "__main__":
         args.use_slow_tokenizer = True
 
     plan_model_path = '/home/ubuntu/lumos/.cache/hub/models--ai2lumos--lumos_maths_plan_iterative/snapshots/232661635c70cd18d1cd0c3acad7ea9325e435bf'
-    plan_model_path = '/home/ubuntu/lumos/.cache/hub/models--ai2lumos--lumos_maths_ground_iterative/snapshots/edd152df62ff0c1f4e6297ed83fc7ade62bf6c80'
+    # plan_model_path = '/home/ubuntu/lumos/.cache/hub/models--ai2lumos--lumos_maths_ground_iterative/snapshots/edd152df62ff0c1f4e6297ed83fc7ade62bf6c80'
     plan_model, plan_tokenizer = load_hf_lm_and_tokenizer(
                 model_name_or_path=plan_model_path, 
                 tokenizer_name_or_path=plan_model_path, 
@@ -283,7 +283,7 @@ if __name__ == "__main__":
                 load_in_half=True,
                 gptq_model=args.gptq
             )
-    save_directory = '/home/ubuntu/lumos/results/lumos_maths_rl_iterative/train/epoch_1'
+    save_directory = '/home/ubuntu/lumos/results/lumos_maths_rl_iterative/debug/before_train'
     load_context = CQLModelForCausalLM.prepare_load_context(args=args, save_directory=save_directory)
     ground_model = CQLModelForCausalLM(**load_context)
     ground_model.from_pretrained(args=args, save_directory=save_directory)

@@ -1,4 +1,5 @@
 import os
+import copy
 try:
     api_key = os.environ["WOLFRAM_API_KEY"]
 except KeyError:
@@ -57,72 +58,6 @@ model_name_list = [
 ]
 cuda_usage_dir = lumos_dir.joinpath('cuda_usage')
 cuda_usage_dir.mkdir(exist_ok=True, parents=True)
-
-
-@dataclass
-class DataCollatorForSeqRL(DataCollatorForSeq2Seq):
-    def __call__(self, features, return_tensors=None):
-        if return_tensors is None:
-            return_tensors = self.return_tensors
-        states = [feature["states"] for feature in features] if "states" in features[0].keys() else None
-        actions = [feature["actions"] for feature in features] if "actions" in features[0].keys() else None
-        next_states = [feature["next_states"] for feature in features] if "next_states" in features[0].keys() else None
-        rewards = [feature["rewards"] for feature in features] if "rewards" in features[0].keys() else None
-
-        assert states is not None and actions is not None and next_states is not None and rewards is not None, "Need to have states, actions, next_states and rewards in features."
-
-        max_state_length = max(len(l) for l in states)
-        max_next_state_length = max(len(l) for l in next_states)
-
-        if self.pad_to_multiple_of is not None:
-            max_state_length = (
-                (max_state_length + self.pad_to_multiple_of - 1)
-                // self.pad_to_multiple_of
-                * self.pad_to_multiple_of
-            )
-            max_next_state_length = (
-                (max_next_state_length + self.pad_to_multiple_of - 1)
-                // self.pad_to_multiple_of
-                * self.pad_to_multiple_of
-            )
-
-        padding_side = self.tokenizer.padding_side
-        for feature in features:
-            state_remainder = [self.tokenizer.pad_token_id] * (max_state_length - len(feature["states"]))
-            next_state_remainder = [self.tokenizer.pad_token_id] * (max_next_state_length - len(feature["next_states"]))
-            if isinstance(feature["states"], list):
-                feature["states"] = (
-                    feature["states"] + state_remainder if padding_side == "right" else state_remainder + feature["states"]
-                )
-                feature["next_states"] = (
-                    feature["next_states"] + next_state_remainder if padding_side == "right" else next_state_remainder + feature["next_states"]
-                )
-            elif padding_side == "right":
-                feature["states"] = np.concatenate([feature["states"], state_remainder]).astype(np.int64)
-                feature["next_states"] = np.concatenate([feature["next_states"], next_state_remainder]).astype(np.int64)
-            else:
-                feature["states"] = np.concatenate([state_remainder, feature["states"]]).astype(np.int64)
-                feature["next_states"] = np.concatenate([next_state_remainder, feature["next_states"]]).astype(np.int64)
-
-        features = self.tokenizer.pad(
-            features,
-            padding=self.padding,
-            max_length=self.max_length,
-            pad_to_multiple_of=self.pad_to_multiple_of,
-            return_tensors=return_tensors,
-        )
-
-        if (
-            self.model is not None
-            and hasattr(self.model, "prepare_decoder_input_ids_from_labels")
-        ):
-            raise NotImplementedError('LLaMA2 has no attribute "prepare_decoder_input_ids_from_labels"')
-        
-        # Remove unnecessary items
-        features.data.pop('input_ids')
-        features.data.pop('attention_mask')
-
-        return features
     
 
 @dataclass
@@ -196,12 +131,15 @@ class DataCollatorForSeqRLVF(DataCollatorForSeq2Seq):
                 feature["pi_actions"] = np.concatenate([pi_action_remainder, feature["pi_actions"]]).astype(np.int64)
                 feature["next_states"] = np.concatenate([next_state_remainder, feature["next_states"]]).astype(np.int64)
 
+        for i in range(len(features)):
+            features[i]['input_ids'] = features[i]['actions']
         features = self.tokenizer.pad(
             features,
             padding=self.padding,
             max_length=self.max_length,
             pad_to_multiple_of=self.pad_to_multiple_of,
             return_tensors=return_tensors,
+            return_attention_mask=False,
         )
 
         if (
@@ -211,8 +149,7 @@ class DataCollatorForSeqRLVF(DataCollatorForSeq2Seq):
             raise NotImplementedError('LLaMA2 has no attribute "prepare_decoder_input_ids_from_labels"')
         
         # Remove unnecessary items
-        features.data.pop('input_ids')
-        features.data.pop('attention_mask')
+        features.pop('input_ids')
 
         return features
 
@@ -544,14 +481,13 @@ def wrap_dataset_vf(args: argparse.Namespace, dataset: datasets.Dataset, task_na
     total_rewards_list = []
     total_dones_list = []
     total_valid_flags_list = []
-    total_pi_actions_list = []
     total_invalid_flags_list = []
     wrap_tqdm = tqdm(range(len(dataset)))
 
     # debug_start_idx = 10000
     # if args.debug or 'gpt2' in args.model_name_or_path:
         # wrap_tqdm = tqdm(range(debug_start_idx, debug_start_idx + 100))
-    # wrap_tqdm = tqdm(range(debug_start_idx, debug_start_idx + 3))
+    # wrap_tqdm = tqdm(range(debug_start_idx, debug_start_idx + 10))
 
     wrap_tqdm.set_description("Wrapping dataset to RL format")
     for data_idx in wrap_tqdm:
@@ -641,12 +577,9 @@ def wrap_dataset_vf(args: argparse.Namespace, dataset: datasets.Dataset, task_na
         total_rewards_list.extend([0] * (len(tau_next_state_ids_list) - 1) + [1])
         total_dones_list.extend([0] * (len(tau_next_state_ids_list) - 1) + [1])
         total_valid_flags_list.extend(tau_valid_flags_list)
-        total_pi_actions_list.extend(tau_state_agent_ids_list)
         total_invalid_flags_list.extend(tau_valid_flags_list)
 
     data_dict = {
-        'input_ids': total_action_ids_list,  # Needed by DataCollator
-
         'states_user': total_state_user_ids_list,
         'states_agent': total_state_agent_ids_list,
         'actions': total_action_ids_list,
@@ -654,13 +587,12 @@ def wrap_dataset_vf(args: argparse.Namespace, dataset: datasets.Dataset, task_na
         'rewards': total_rewards_list,
         'dones': total_dones_list,
         'valid_flags': total_valid_flags_list,
-        'pi_actions': total_pi_actions_list,
+        'pi_actions': total_state_agent_ids_list,
         'invalid_flags': total_invalid_flags_list,
         'task_ids': total_task_id_list,
     }
 
     ivf_data_dict = {
-        'input_ids': [],
         'states_user': [],
         'states_agent': [],
         'actions': [],
@@ -676,7 +608,6 @@ def wrap_dataset_vf(args: argparse.Namespace, dataset: datasets.Dataset, task_na
     total_steps = len(total_action_ids_list)
     for step in range(total_steps):
         if total_valid_flags_list[step] == 1:
-            ivf_data_dict['input_ids'].append(total_action_ids_list[step])
             ivf_data_dict['states_user'].append(total_state_user_ids_list[step])
             ivf_data_dict['states_agent'].append(total_state_agent_ids_list[step])
             ivf_data_dict['actions'].append(total_action_ids_list[step])
@@ -745,7 +676,7 @@ def gsm_step(states_user: torch.LongTensor, tokenizer: AutoTokenizer, actions: s
 
     inter_results = {}
     assistant_block_str = '\n<|assistant|>\n'
-    block_list = tokenizer.decode(states_user).split(assistant_block_str)
+    block_list = tokenizer.decode(states_user, skip_special_tokens=True).split(assistant_block_str)
     # 0 for task description, -1 for current action
     inter_operation_str_with_user_prompt_list = block_list[1: -1]
     inter_operation_str_list = [operation_str_with_user_prompt[:operation_str_with_user_prompt.find(tokenizer.eos_token)] for operation_str_with_user_prompt in inter_operation_str_with_user_prompt_list]
@@ -785,6 +716,7 @@ def gsm_step(states_user: torch.LongTensor, tokenizer: AutoTokenizer, actions: s
 
 # Fine grained (Only skip QA related processs at execution-level)
 def complex_qa_step(batch_dict: dict, tokenizer: AutoTokenizer, actions: str) -> dict:
+    raise NotImplementedError
     state_user = tokenizer.decode(batch_dict['states_user'][0])
     user_block_str = '<|user|>\n'
     assistant_block_str = '\n<|assistant|>\n'
