@@ -301,7 +301,7 @@ def parse_args():
     
     parser.add_argument("--target_update_interval", type=int, default=128 * 10, help="Update target net every target_update_interval minibatches")
 
-    parser.add_argument("--checkpointing_steps", type=str, default='10', help="Whether the various states should be saved at the end of every n steps, or 'epoch' for each epoch.")  # Same value as target_update_interval
+    parser.add_argument("--checkpointing_steps", type=str, default='16', help="Whether the various states should be saved at the end of every n steps, or 'epoch' for each epoch.")  # Same value as target_update_interval
     # parser.add_argument("--checkpointing_steps", type=str, default='epoch', help="Whether the various states should be saved at the end of every n steps, or 'epoch' for each epoch.")  # Same value as target_update_interval
 
     # CQL Model
@@ -484,9 +484,8 @@ def wrap_dataset_vf(args: argparse.Namespace, dataset: datasets.Dataset, task_na
     total_invalid_flags_list = []
     wrap_tqdm = tqdm(range(len(dataset)))
 
-    # debug_start_idx = 10000
-    # if args.debug or 'gpt2' in args.model_name_or_path:
-        # wrap_tqdm = tqdm(range(debug_start_idx, debug_start_idx + 100))
+    debug_start_idx = 10000
+    wrap_tqdm = tqdm(range(debug_start_idx, debug_start_idx + 100))
     # wrap_tqdm = tqdm(range(debug_start_idx, debug_start_idx + 10))
 
     wrap_tqdm.set_description("Wrapping dataset to RL format")
@@ -1232,6 +1231,18 @@ def main():
 
     import queue
     log_info_queue = queue.Queue(maxsize=200)
+
+    q_net_module_name_list = [
+        'module.q_head.q_net_list.0.0.weight',
+        'module.q_head.q_net_list.0.0.bias',
+        'module.q_head.q_net_list.1.0.weight',
+        'module.q_head.q_net_list.1.0.bias',
+
+        'module.target_q_head.q_net_list.0.0.weight',
+        'module.target_q_head.q_net_list.0.0.bias',
+        'module.target_q_head.q_net_list.1.0.weight',
+        'module.target_q_head.q_net_list.1.0.bias',
+    ]
     for epoch in range(starting_epoch, args.num_train_epochs):
         total_loss = 0
         active_dataloader_for_ivf = train_dataloader_for_ivf
@@ -1289,11 +1300,13 @@ def main():
 
             if accumulated_steps % target_update_kwargs['update_interval'] == 0:
                 params_to_fetch = [
-                    p for p in model.parameters()
-                    if hasattr(p, 'ds_id') and p.ds_status == ZeroParamStatus.NOT_AVAILABLE
+                    p for n, p in model.named_parameters()
+                    if hasattr(p, 'ds_id') and p.ds_status == ZeroParamStatus.NOT_AVAILABLE and n in q_net_module_name_list
                 ]
+
                 with deepspeed.zero.GatheredParameters(params_to_fetch, modifier_rank=0):
-                    accelerator.unwrap_model(model).update_target_value_head(target_update_kwargs)
+                    if accelerator.is_main_process:
+                        accelerator.unwrap_model(model).update_target_value_head(target_update_kwargs)
 
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:
