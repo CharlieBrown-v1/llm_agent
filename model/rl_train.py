@@ -18,6 +18,7 @@ from accelerate.utils import set_seed
 from datasets import load_dataset
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
+from pathlib import Path
 
 import transformers
 from transformers import (
@@ -301,8 +302,8 @@ def parse_args():
     
     parser.add_argument("--target_update_interval", type=int, default=128 * 10, help="Update target net every target_update_interval minibatches")
 
-    parser.add_argument("--checkpointing_steps", type=str, default='16', help="Whether the various states should be saved at the end of every n steps, or 'epoch' for each epoch.")  # Same value as target_update_interval
-    # parser.add_argument("--checkpointing_steps", type=str, default='epoch', help="Whether the various states should be saved at the end of every n steps, or 'epoch' for each epoch.")  # Same value as target_update_interval
+    # parser.add_argument("--checkpointing_steps", type=str, default='16', help="Whether the various states should be saved at the end of every n steps, or 'epoch' for each epoch.")  # Same value as target_update_interval
+    parser.add_argument("--checkpointing_steps", type=str, default='epoch', help="Whether the various states should be saved at the end of every n steps, or 'epoch' for each epoch.")  # Same value as target_update_interval
 
     # CQL Model
     parser.add_argument("--use_lagrange", action="store_true", default=False, help="Debug Flag")
@@ -325,7 +326,10 @@ def parse_args():
     parser.add_argument("--lr_scheduler_type", type=SchedulerType, default="linear", help="The scheduler type to use.", choices=["linear", "cosine", "cosine_with_restarts", "polynomial", "constant", "constant_with_warmup"])
     parser.add_argument("--warmup_ratio", type=float, default=0.03, help="Ratio of total training steps used for warmup.")
     parser.add_argument("--weight_decay", type=float, default=0.0, help="Weight decay to use.")
-    parser.add_argument("--num_train_epochs", type=int, default=2, help="Total number of training epochs to perform.")
+
+    # parser.add_argument("--num_train_epochs", type=int, default=2, help="Total number of training epochs to perform.")
+    parser.add_argument("--num_train_epochs", type=int, default=100, help="Total number of training epochs to perform.")
+
     parser.add_argument("--output_dir", type=str, default=str(lumos_dir.joinpath('results/lumos_maths_rl_iterative')), help="Where to store the final model.")
     parser.add_argument("--with_tracking", action="store_true", default=False, help="Whether to enable experiment trackers for logging.")
     parser.add_argument("--report_to", type=str, default="tensorboard")
@@ -485,7 +489,7 @@ def wrap_dataset_vf(args: argparse.Namespace, dataset: datasets.Dataset, task_na
     wrap_tqdm = tqdm(range(len(dataset)))
 
     debug_start_idx = 10000
-    wrap_tqdm = tqdm(range(debug_start_idx, debug_start_idx + 100))
+    wrap_tqdm = tqdm(range(debug_start_idx, debug_start_idx + 256))
     # wrap_tqdm = tqdm(range(debug_start_idx, debug_start_idx + 10))
 
     wrap_tqdm.set_description("Wrapping dataset to RL format")
@@ -620,7 +624,7 @@ def wrap_dataset_vf(args: argparse.Namespace, dataset: datasets.Dataset, task_na
             ivf_data_dict['original_indexes'].append(step)
     
     wrapped_dataset = datasets.Dataset.from_dict(data_dict)
-    token_space = torch.unique(torch.as_tensor(total_action_ids_list))
+    token_space = torch.load(Path(args.train_file).parent.joinpath('token_space.pth'))
     wrapped_dataset_for_ivf = datasets.Dataset.from_dict(ivf_data_dict)
 
     wrap_result = {

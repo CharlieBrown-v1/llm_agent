@@ -294,21 +294,21 @@ if __name__ == "__main__":
                 gptq_model=args.gptq
             )
     
-    # save_directory = '/home/ubuntu/lumos/results/lumos_maths_rl_iterative/train/step_40'
-    # load_context = CQLModelForCausalLM.prepare_load_context(args=args, save_directory=save_directory)
-    # ground_model = CQLModelForCausalLM(**load_context)
-    # ground_model.from_pretrained(args=args, save_directory=save_directory)
-    # ground_tokenizer = ground_model.tokenizer
-    # ground_model.to('cuda:1')
+    save_directory = '/home/ubuntu/lumos/results/lumos_maths_rl_iterative/train/step_64'
+    load_context = CQLModelForCausalLM.prepare_load_context(args=args, save_directory=save_directory)
+    ground_model = CQLModelForCausalLM(**load_context)
+    ground_model.from_pretrained(args=args, save_directory=save_directory)
+    ground_tokenizer = ground_model.tokenizer
+    ground_model.to('cuda:1')
 
-    ground_model_path = '/home/ubuntu/lumos/.cache/hub/models--ai2lumos--lumos_maths_ground_iterative/snapshots/edd152df62ff0c1f4e6297ed83fc7ade62bf6c80'
-    ground_model, ground_tokenizer = load_hf_lm_and_tokenizer(
-                model_name_or_path=ground_model_path, 
-                tokenizer_name_or_path=ground_model_path, 
-                load_in_8bit=args.load_in_8bit, 
-                load_in_half=True,
-                gptq_model=args.gptq
-            )
+    # ground_model_path = '/home/ubuntu/lumos/.cache/hub/models--ai2lumos--lumos_maths_ground_iterative/snapshots/edd152df62ff0c1f4e6297ed83fc7ade62bf6c80'
+    # ground_model, ground_tokenizer = load_hf_lm_and_tokenizer(
+    #             model_name_or_path=ground_model_path, 
+    #             tokenizer_name_or_path=ground_model_path, 
+    #             load_in_8bit=args.load_in_8bit, 
+    #             load_in_half=True,
+    #             gptq_model=args.gptq
+    #         )
 
     infer_context = dict(
         plan_model=plan_model,
