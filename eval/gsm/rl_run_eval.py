@@ -126,7 +126,9 @@ def lumos_iterative(args, infer_context: dict):
         os.makedirs(args.save_dir, exist_ok=True)
     
     solved_idx = list()
-    for i in tqdm(range(16)):
+    inf_steps = 16
+    # inf_steps = 2
+    for i in tqdm(range(inf_steps)):
         if len(solved_idx) == len(test_data):
             break
         if i % 2 == 0:
@@ -170,7 +172,7 @@ def lumos_iterative(args, infer_context: dict):
                     model=model,
                     tokenizer=tokenizer,
                     prompts=plan_prompts,
-                    max_new_tokens=512,
+                    max_new_tokens=args.max_new_tokens,
                     batch_size=args.eval_batch_size,
                     stop_id_sequences=[[new_line_token]]
                 )
@@ -180,7 +182,7 @@ def lumos_iterative(args, infer_context: dict):
                         rl_model=model,
                         tokenizer=tokenizer,
                         prompts=ground_prompts,
-                        max_new_tokens=512,
+                        max_new_tokens=args.max_new_tokens,
                         batch_size=args.eval_batch_size,
                         stop_id_sequences=[[new_line_token]]
                     )
@@ -189,7 +191,7 @@ def lumos_iterative(args, infer_context: dict):
                         model=model,
                         tokenizer=tokenizer,
                         prompts=ground_prompts,
-                        max_new_tokens=512,
+                        max_new_tokens=args.max_new_tokens,
                         batch_size=args.eval_batch_size,
                         stop_id_sequences=[[new_line_token]]
                     )
@@ -231,20 +233,31 @@ def lumos_iterative(args, infer_context: dict):
                         all_subgoals_actions[j]["actions"].append(action.strip())
     
     corr = 0
-    with open(os.path.join(args.save_dir, f"predictions_iterative.jsonl"), "w") as f:
+    postfix = args.save_directory.split('/')[-1]
+
+    print(f'=' * 32 + f' Postfix: {postfix} ' + f'=' * 32)
+
+    with open(os.path.join(args.save_dir, f"predictions_iterative_{postfix}.jsonl"), "w") as f:
         for subgoal_action in all_subgoals_actions:
             if subgoal_action["results"]:
-                variables = sorted(list([int(k[1:]) for k in subgoal_action["results"].keys()]))
+                variables = []
+                for k in subgoal_action["results"].keys():
+                    if k[1:].isdigit():
+                        variables.append(int(k[1:]))
                 final_variable = 'R' + str(variables[-1])
                 if subgoal_action["results"][final_variable] == subgoal_action["answer"]:
                     corr += 1
                 
-                f.write(json.dumps({"question": subgoal_action["question"], 
-                                    "pred": subgoal_action["results"][final_variable], 
-                                    "answer": subgoal_action["answer"], 
-                                    "subgoals": subgoal_action["subgoals"], 
-                                    "actions": subgoal_action["actions"]
-                                    })+'\n')
+                result = {
+                    "question": subgoal_action["question"], 
+                    "pred": subgoal_action["results"][final_variable], 
+                    "answer": subgoal_action["answer"], 
+                    "subgoals": subgoal_action["subgoals"], 
+                    "actions": subgoal_action["actions"],
+                }
+                json_line = json.dumps(result, indent=4)
+                f.write(json_line + "\n")
+
     print("Acc:", corr*1./len(test_data))
 
 
@@ -265,8 +278,10 @@ if __name__ == "__main__":
     parser.add_argument("--use_flash_attn", action="store_true", default=False, help="If passed, will use flash attention to train the model.")
     parser.add_argument("--use_slow_tokenizer", action="store_false", default=True, help="If passed, will use flash attention to train the model.")
 
+    parser.add_argument("--save_directory", type=str, default='lumos', help="pretrained model directory.")
     parser.add_argument("--data_dir", type=str, default=lumos_dir_path.joinpath('data/eval/gsm'), help="data directory.")
     parser.add_argument("--max_num_examples", type=int, default=10, help="maximum number of examples to evaluate.")
+    parser.add_argument("--max_new_tokens", type=int, default=128, help="maximum number of examples to evaluate.")
     parser.add_argument("--save_dir", type=str, default=lumos_dir_path.joinpath('results/gsm'), help="directory to save the results.")
     parser.add_argument("--model_name_or_path", type=str, default=test_model_path, help="if specified, we will load the model to generate the predictions.")
     parser.add_argument("--eval_batch_size", type=int, default=1, help="batch size for evaluation.")
@@ -294,21 +309,22 @@ if __name__ == "__main__":
                 gptq_model=args.gptq
             )
     
-    save_directory = '/home/ubuntu/lumos/results/lumos_maths_rl_iterative/train/step_64'
+    save_directory = '/home/ubuntu/lumos/results/lumos_maths_rl_iterative/train/step_170'
     load_context = CQLModelForCausalLM.prepare_load_context(args=args, save_directory=save_directory)
     ground_model = CQLModelForCausalLM(**load_context)
     ground_model.from_pretrained(args=args, save_directory=save_directory)
     ground_tokenizer = ground_model.tokenizer
     ground_model.to('cuda:1')
+    args.save_directory = save_directory
 
     # ground_model_path = '/home/ubuntu/lumos/.cache/hub/models--ai2lumos--lumos_maths_ground_iterative/snapshots/edd152df62ff0c1f4e6297ed83fc7ade62bf6c80'
     # ground_model, ground_tokenizer = load_hf_lm_and_tokenizer(
-    #             model_name_or_path=ground_model_path, 
-    #             tokenizer_name_or_path=ground_model_path, 
-    #             load_in_8bit=args.load_in_8bit, 
-    #             load_in_half=True,
-    #             gptq_model=args.gptq
-    #         )
+                # model_name_or_path=ground_model_path, 
+                # tokenizer_name_or_path=ground_model_path, 
+                # load_in_8bit=args.load_in_8bit, 
+                # load_in_half=True,
+                # gptq_model=args.gptq
+            # )
 
     infer_context = dict(
         plan_model=plan_model,
