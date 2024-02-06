@@ -302,7 +302,7 @@ def parse_args():
     
     parser.add_argument("--target_update_interval", type=int, default=128 * 10, help="Update target net every target_update_interval minibatches")
 
-    parser.add_argument("--checkpointing_steps", type=str, default='10', help="Whether the various states should be saved at the end of every n steps, or 'epoch' for each epoch.")  # Same value as target_update_interval
+    parser.add_argument("--checkpointing_steps", type=str, default='1000', help="Whether the various states should be saved at the end of every n steps, or 'epoch' for each epoch.")  # Same value as target_update_interval
     # parser.add_argument("--checkpointing_steps", type=str, default='epoch', help="Whether the various states should be saved at the end of every n steps, or 'epoch' for each epoch.")  # Same value as target_update_interval
 
     # CQL Model
