@@ -487,8 +487,8 @@ def wrap_dataset_vf(args: argparse.Namespace, dataset: datasets.Dataset, task_na
     total_invalid_flags_list = []
     wrap_tqdm = tqdm(range(len(dataset)))
 
-    debug_start_idx = 10000
-    wrap_tqdm = tqdm(range(debug_start_idx, debug_start_idx + 1024))
+    # debug_start_idx = 10000
+    # wrap_tqdm = tqdm(range(debug_start_idx, debug_start_idx + 1024))
 
     wrap_tqdm.set_description("Wrapping dataset to RL format")
     for data_idx in wrap_tqdm:
