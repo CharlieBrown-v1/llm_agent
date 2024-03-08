@@ -133,8 +133,17 @@ class CQLModelForCausalLM(nn.Module):
         self.value_optim_kwargs = value_optim_kwargs
         self.ivf_optim_kwargs = ivf_optim_kwargs
 
-        if self.policy_optim_kwargs['frozen_attn']:
-            for param in self.pretrained_model.model.parameters():
+        for frozen_layer in range(self.policy_optim_kwargs['frozen_attn']):
+            # Frozen the module before .layers
+            if frozen_layer == 0:
+                for param in self.pretrained_model.model.embed_tokens.parameters():
+                    param.requires_grad = False
+            # Frozen the module after .layers
+            if frozen_layer == self.pretrained_model.config.num_hidden_layers - 1:
+                for param in self.pretrained_model.model.norm.parameters():
+                    param.requires_grad = False
+
+            for param in self.pretrained_model.model.layers[frozen_layer].parameters():
                 param.requires_grad = False
 
         self.log_alpha = Scalar(init_value=0.0, dtype=self.tensor_dtype)

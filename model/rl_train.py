@@ -296,7 +296,9 @@ def parse_args():
     parser.add_argument("--task_name", type=str, default='maths', help="Task name", choices=['maths'])
 
     # Train utils
-    parser.add_argument("--frozen_attn", action="store_true", default=False, help="Debug Flag")
+    # parser.add_argument("--frozen_attn", type=int, default=0, help="Layers of frozen attn layers.")
+    parser.add_argument("--frozen_attn", type=int, default=32, help="Layers of frozen attn layers.")
+
     parser.add_argument("--target_update_method", type=str, default='hard', help="Method of updating target net")
     # parser.add_argument("--target_update_method", type=str, default='soft', help="Method of updating target net")
     
@@ -306,19 +308,20 @@ def parse_args():
     # parser.add_argument("--checkpointing_steps", type=str, default='epoch', help="Whether the various states should be saved at the end of every n steps, or 'epoch' for each epoch.")  # Same value as target_update_interval
 
     # CQL Model
-    parser.add_argument("--use_lagrange", action="store_true", default=False, help="Debug Flag")
+    parser.add_argument("--use_lagrange", action="store_true", default=False, help="CQL tricks")
     parser.add_argument("--num_network", type=int, default=2, help="Multiple Q Trick")
     parser.add_argument("--seed", type=int, default=47, help="A seed for reproducible training.")
-    parser.add_argument("--model_name_or_path", type=str, default='/home/ubuntu/lumos/.cache/hub/models--ai2lumos--lumos_maths_ground_iterative/snapshots/edd152df62ff0c1f4e6297ed83fc7ade62bf6c80', help="Path to pretrained model or model identifier from huggingface.co/models.", required=False)
+
+    # parser.add_argument("--model_name_or_path", type=str, default='/home/ubuntu/lumos/.cache/hub/models--ai2lumos--lumos_maths_ground_iterative/snapshots/edd152df62ff0c1f4e6297ed83fc7ade62bf6c80', help="Path to pretrained model or model identifier from huggingface.co/models.", required=False)
+    parser.add_argument("--model_name_or_path", type=str, default='/home/ubuntu/ysh/.cache/hub/models--ai2lumos--lumos_maths_ground_iterative/snapshots/edd152df62ff0c1f4e6297ed83fc7ade62bf6c80', help="Path to pretrained model or model identifier from huggingface.co/models.", required=False)
+
     parser.add_argument("--use_flash_attn", action="store_true", default=False, help="If passed, will use flash attention to train the model.")
     parser.add_argument("--tokenizer_name", type=str, default=None, help="Pretrained tokenizer name or path if not the same as model_name")
     parser.add_argument("--use_slow_tokenizer", action="store_false", default=True, help="If passed, will use flash attention to train the model.")
     parser.add_argument("--train_file", type=str, default=str(lumos_dir.joinpath(f'data/train/maths/lumos_maths_ground_iterative.jsonl')), help="A csv or a json file containing the training data.")
     parser.add_argument("--max_seq_length", type=int, default=2048, help="The maximum total sequence length (prompt+completion) of each training example.")
     parser.add_argument("--preprocessing_num_workers", type=int, default=16, help="The number of processes to use for the preprocessing.")
-
-    # parser.add_argument("--per_device_train_batch_size", type=int, default=1, help="Batch size (per device) for the training dataloader.")
-    parser.add_argument("--per_device_train_batch_size", type=int, default=2, help="Batch size (per device) for the training dataloader.")
+    parser.add_argument("--per_device_train_batch_size", type=int, default=1, help="Batch size (per device) for the training dataloader.")
 
     # batch_size / num_gpus / batch_size_per_gpu
     parser.add_argument("--gradient_accumulation_steps", type=int, default=int(128 / 1 / 1), help="Number of updates steps to accumulate before performing a backward/update pass.")
@@ -326,9 +329,7 @@ def parse_args():
     parser.add_argument("--lr_scheduler_type", type=SchedulerType, default="linear", help="The scheduler type to use.", choices=["linear", "cosine", "cosine_with_restarts", "polynomial", "constant", "constant_with_warmup"])
     parser.add_argument("--warmup_ratio", type=float, default=0.03, help="Ratio of total training steps used for warmup.")
     parser.add_argument("--weight_decay", type=float, default=0.0, help="Weight decay to use.")
-
     parser.add_argument("--num_train_epochs", type=int, default=2, help="Total number of training epochs to perform.")
-
     parser.add_argument("--output_dir", type=str, default=str(lumos_dir.joinpath('results/lumos_maths_rl_iterative')), help="Where to store the final model.")
     parser.add_argument("--with_tracking", action="store_true", default=False, help="Whether to enable experiment trackers for logging.")
     parser.add_argument("--report_to", type=str, default="tensorboard")
@@ -487,8 +488,12 @@ def wrap_dataset_vf(args: argparse.Namespace, dataset: datasets.Dataset, task_na
     total_invalid_flags_list = []
     wrap_tqdm = tqdm(range(len(dataset)))
 
-    # debug_start_idx = 10000
-    # wrap_tqdm = tqdm(range(debug_start_idx, debug_start_idx + 1024))
+    debug_start_idx = 0
+    if args.debug:
+        wrap_tqdm = tqdm(range(debug_start_idx, debug_start_idx + 10))
+    else:
+        wrap_tqdm = tqdm(range(debug_start_idx, debug_start_idx + 1000))
+        # wrap_tqdm = tqdm(range(debug_start_idx, debug_start_idx + 10000))
 
     wrap_tqdm.set_description("Wrapping dataset to RL format")
     for data_idx in wrap_tqdm:
@@ -799,7 +804,7 @@ def main():
         args.low_cpu_mem_usage = True  # Used by device_map = 'auto'
         args.target_update_interval = 1  # check whether target update works
         args.with_tracking = True  # check whether logger module works
-        args.frozen_attn = True
+        args.frozen_attn = 32
         args.output_dir = str(Path(args.output_dir).joinpath('debug'))
     # Train config
     else:
@@ -1254,16 +1259,20 @@ def main():
             'invalid_flags': [],
             'original_indexes': [],
         }
-        for step, batch_dict in enumerate(active_dataloader_for_ivf):
-            batch_ivf_context = accelerator.unwrap_model(model).compute_ivf_context(batch_dict=batch_dict,
-                                                               task_ids=task_ids,
-                                                               gsm_step=gsm_step,
-                                                               max_seq_length=args.max_seq_length,
-                                                               )
+        
+        ivf_tqdm = tqdm(active_dataloader_for_ivf)
+        ivf_tqdm.set_description(f'Compute ivf_context on epoch {epoch}')
+        for step, batch_dict in enumerate(ivf_tqdm):
+        # for step, batch_dict in enumerate(active_dataloader_for_ivf):
+            batch_ivf_context = accelerator.unwrap_model(model).compute_ivf_context(
+                                                                batch_dict=batch_dict,
+                                                                task_ids=task_ids,
+                                                                gsm_step=gsm_step,
+                                                                max_seq_length=args.max_seq_length,
+                                                                )
             ivf_context['pi_actions'].extend(batch_ivf_context['pi_actions'].tolist())
             ivf_context['invalid_flags'].extend(batch_ivf_context['invalid_flags'].tolist())
             ivf_context['original_indexes'].extend(batch_ivf_context['original_indexes'].tolist())
-
         model.train()
         
         updated_rl_train_data_dict = rl_train_dataset.to_dict().copy()
@@ -1278,7 +1287,11 @@ def main():
             batch_size=args.per_device_train_batch_size,
         )
         active_dataloader = accelerator.prepare(active_dataloader)
-        for step, batch_dict in enumerate(active_dataloader):
+
+        opt_tqdm = tqdm(active_dataloader)
+        opt_tqdm.set_description(f'Do RL optimization on epoch {epoch}')
+        for step, batch_dict in enumerate(opt_tqdm):
+        # for step, batch_dict in enumerate(active_dataloader):
             accumulated_steps += 1
             with accelerator.accumulate(model):
                 reporter = CustomMemReporter(model)

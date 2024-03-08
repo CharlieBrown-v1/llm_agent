@@ -314,7 +314,5 @@ if __name__ == '__main__':
         model, tokenizer = load_hf_lm_and_tokenizer(
             model_name_or_path=model_name_or_path, 
             tokenizer_name_or_path=model_name_or_path, 
-            load_in_8bit=True, 
-            load_in_half=True,
         )
     print(f'Finish model downloading!')
