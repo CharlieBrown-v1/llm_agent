@@ -641,8 +641,10 @@ class CQLModelForCausalLM(nn.Module):
                 low_cpu_mem_usage=args.low_cpu_mem_usage,
                 use_flash_attention_2=True if args.use_flash_attn else False,
                 torch_dtype=config.torch_dtype,
+                device_map='auto',
             )
         tokenizer = AutoTokenizer.from_pretrained(save_directory, use_fast=not args.use_slow_tokenizer)
+        tokenizer.padding_side = args.padding_side
         token_space_save_path = Path(save_directory).joinpath('token_space.pth')
         token_space = torch.load(token_space_save_path)
         kwargs_dict_save_path = Path(save_directory).joinpath('kwargs_dict.json')

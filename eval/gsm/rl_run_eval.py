@@ -208,17 +208,14 @@ def lumos_iterative(args, infer_context: dict):
                     continue
                 all_subgoals_actions[j]["subgoals"].append(subgoals[j].strip())
                 for k, action in enumerate(actions[j].strip().split('; ')):
-                    try:
-                        results_variable, execution_results = execute(action.strip(), all_subgoals_actions[j]["results"])
-                        if execution_results:
-                            if isinstance(results_variable, str):
-                                all_subgoals_actions[j]["results"][results_variable] = execution_results
-                            else:
-                                for k, variable in enumerate(results_variable):
-                                    all_subgoals_actions[j]["results"][variable] = execution_results[k]
+                    results_variable, execution_results = execute(action.strip(), all_subgoals_actions[j]["results"])
+                    if execution_results:
+                        if isinstance(results_variable, str):
+                            all_subgoals_actions[j]["results"][results_variable] = execution_results
                         else:
-                            all_subgoals_actions[j]["results"] = None
-                    except:
+                            for k, variable in enumerate(results_variable):
+                                all_subgoals_actions[j]["results"][variable] = execution_results[k]
+                    else:
                         all_subgoals_actions[j]["results"] = None
                 
                     try:
@@ -239,24 +236,29 @@ def lumos_iterative(args, infer_context: dict):
 
     with open(os.path.join(args.save_dir, f"predictions_iterative_{postfix}.jsonl"), "w") as f:
         for subgoal_action in all_subgoals_actions:
+            variables = []
+            pred = ''
             if subgoal_action["results"]:
-                variables = []
                 for k in subgoal_action["results"].keys():
                     if k[1:].isdigit():
                         variables.append(int(k[1:]))
-                final_variable = 'R' + str(variables[-1])
-                if subgoal_action["results"][final_variable] == subgoal_action["answer"]:
-                    corr += 1
-                
-                result = {
-                    "question": subgoal_action["question"], 
-                    "pred": subgoal_action["results"][final_variable], 
-                    "answer": subgoal_action["answer"], 
-                    "subgoals": subgoal_action["subgoals"], 
-                    "actions": subgoal_action["actions"],
-                }
-                json_line = json.dumps(result, indent=4)
-                f.write(json_line + "\n")
+                try:
+                    final_variable = 'R' + str(variables[-1])
+                    if subgoal_action["results"][final_variable] == subgoal_action["answer"]:
+                        corr += 1
+                    pred = subgoal_action["results"][final_variable]
+                except IndexError:
+                    pass
+            
+            result = {
+                "question": subgoal_action["question"], 
+                "pred": pred,
+                "answer": subgoal_action["answer"], 
+                "subgoals": subgoal_action["subgoals"], 
+                "actions": subgoal_action["actions"],
+            }
+            json_line = json.dumps(result, indent=4)
+            f.write(json_line + "\n")
 
     print("Acc:", corr*1./len(test_data))
 
@@ -273,11 +275,11 @@ if __name__ == "__main__":
     # parser.add_argument("--gptq", action="store_true", help="If given, we're evaluating a 4-bit quantized GPTQ model.")
 
     parser.add_argument("--debug", action="store_true", help="debug flag")
-    parser.add_argument("--frozen_attn", action="store_true", help="frozen attn flag")
     parser.add_argument("--low_cpu_mem_usage", action="store_true", default=False, help=("It is an option to create the model as an empty shell, then only materialize its parameters when the pretrained weights are loaded. If passed, LLM loading time and RAM consumption will be benefited."))
     parser.add_argument("--use_flash_attn", action="store_true", default=False, help="If passed, will use flash attention to train the model.")
     parser.add_argument("--use_slow_tokenizer", action="store_false", default=True, help="If passed, will use flash attention to train the model.")
 
+    parser.add_argument("--padding_side", type=str, default='left', help="padding side of tokenizer.")
     parser.add_argument("--save_directory", type=str, default='lumos', help="pretrained model directory.")
     parser.add_argument("--data_dir", type=str, default=lumos_dir_path.joinpath('data/eval/gsm'), help="data directory.")
     parser.add_argument("--max_num_examples", type=int, default=10, help="maximum number of examples to evaluate.")
@@ -298,6 +300,7 @@ if __name__ == "__main__":
     else:
         args.use_flash_attn = True
         args.use_slow_tokenizer = True
+        args.low_cpu_mem_usage = True  # Used by device_map = 'auto'
 
     plan_model_path = '/home/ubuntu/ysh/.cache/hub/models--ai2lumos--lumos_maths_plan_iterative/snapshots/232661635c70cd18d1cd0c3acad7ea9325e435bf'
     plan_model, plan_tokenizer = load_hf_lm_and_tokenizer(
@@ -306,23 +309,27 @@ if __name__ == "__main__":
                 load_in_8bit=args.load_in_8bit, 
                 load_in_half=True,
                 gptq_model=args.gptq,
+                padding_side=args.padding_side,
             )
     
-    # save_directory = '/home/ubuntu/ysh/llm_agent/results/lumos_maths_rl_iterative/train/step_170'
-    # load_context = CQLModelForCausalLM.prepare_load_context(args=args, save_directory=save_directory)
-    # ground_model = CQLModelForCausalLM(**load_context)
-    # ground_model.from_pretrained(args=args, save_directory=save_directory)
-    # ground_tokenizer = ground_model.tokenizer
-    # args.save_directory = save_directory
+    # args.save_directory = '/home/ubuntu/ysh/llm_agent/results/lumos_maths_rl_iterative/train/step_100'
 
-    ground_model_path = '/home/ubuntu/ysh/.cache/hub/models--ai2lumos--lumos_maths_ground_iterative/snapshots/edd152df62ff0c1f4e6297ed83fc7ade62bf6c80'
-    ground_model, ground_tokenizer = load_hf_lm_and_tokenizer(
-                model_name_or_path=ground_model_path, 
-                tokenizer_name_or_path=ground_model_path, 
-                load_in_8bit=args.load_in_8bit, 
-                load_in_half=True,
-                gptq_model=args.gptq,
-            )
+    save_directory = args.save_directory
+    print(f'Save dir: {save_directory}')
+    load_context = CQLModelForCausalLM.prepare_load_context(args=args, save_directory=save_directory)
+    ground_model = CQLModelForCausalLM(**load_context)
+    ground_model.from_pretrained(args=args, save_directory=save_directory)
+    ground_tokenizer = ground_model.tokenizer
+
+    # ground_model_path = '/home/ubuntu/ysh/.cache/hub/models--ai2lumos--lumos_maths_ground_iterative/snapshots/edd152df62ff0c1f4e6297ed83fc7ade62bf6c80'
+    # ground_model, ground_tokenizer = load_hf_lm_and_tokenizer(
+    #             model_name_or_path=ground_model_path, 
+    #             tokenizer_name_or_path=ground_model_path, 
+    #             load_in_8bit=args.load_in_8bit, 
+    #             load_in_half=True,
+    #             gptq_model=args.gptq,
+    #             padding_side=args.padding_side,
+    #         )
     
     infer_context = dict(
         plan_model=plan_model,
